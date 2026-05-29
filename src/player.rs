@@ -4,8 +4,8 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::audio_fx::{SoundEffects, play_sound};
 use crate::collision::move_circle_through_aabbs;
-use crate::game_ui::GameMode;
-use crate::map::MapColliders;
+use crate::game_ui::{GameMode, SelectedMap, gameplay_unpaused};
+use crate::map::{MapColliders, player_spawn};
 
 pub struct PlayerPlugin;
 
@@ -13,6 +13,7 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FootstepClock>()
             .add_systems(Startup, spawn_player)
+            .add_systems(OnEnter(GameMode::Playing), reset_player)
             .add_systems(
                 Update,
                 (
@@ -22,7 +23,8 @@ impl Plugin for PlayerPlugin {
                     play_footsteps,
                 )
                     .chain()
-                    .run_if(in_state(GameMode::Playing)),
+                    .run_if(in_state(GameMode::Playing))
+                    .run_if(gameplay_unpaused),
             );
     }
 }
@@ -61,18 +63,12 @@ fn spawn_player(mut commands: Commands) {
 }
 
 fn toggle_cursor_capture(
-    keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     mut cursor_options: Query<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
     let Ok(mut cursor_options) = cursor_options.single_mut() else {
         return;
     };
-
-    if keys.just_pressed(KeyCode::Escape) {
-        cursor_options.visible = true;
-        cursor_options.grab_mode = CursorGrabMode::None;
-    }
 
     if buttons.just_pressed(MouseButton::Left) {
         cursor_options.visible = false;
@@ -134,8 +130,6 @@ fn move_player(
     }
 
     if input.length_squared() <= f32::EPSILON {
-        let position = Vec2::new(transform.translation.x, transform.translation.z);
-        transform.translation.y = PLAYER_EYE_HEIGHT + colliders.floor_height_at(position);
         return;
     }
 
@@ -152,8 +146,23 @@ fn move_player(
         move_circle_through_aabbs(position, movement_xz, PLAYER_RADIUS, &colliders.walls);
 
     transform.translation.x = resolved.x;
-    transform.translation.y = PLAYER_EYE_HEIGHT + colliders.floor_height_at(resolved);
+    transform.translation.y = PLAYER_EYE_HEIGHT;
     transform.translation.z = resolved.y;
+}
+
+fn reset_player(
+    selected_map: Res<SelectedMap>,
+    mut player: Query<(&mut Transform, &mut PlayerController), With<PlayerCamera>>,
+) {
+    let Ok((mut transform, mut controller)) = player.single_mut() else {
+        return;
+    };
+    let spawn = player_spawn(selected_map.kind);
+
+    controller.yaw = spawn.yaw;
+    controller.pitch = 0.0;
+    transform.translation = spawn.position;
+    transform.rotation = Quat::from_rotation_y(controller.yaw);
 }
 
 fn play_footsteps(

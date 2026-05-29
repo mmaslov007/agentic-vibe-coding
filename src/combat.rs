@@ -3,7 +3,7 @@ use bevy::window::PrimaryWindow;
 
 use crate::audio_fx::{SoundEffects, play_sound};
 use crate::collision::Aabb3;
-use crate::game_ui::{GameMode, Score, ScoreValue};
+use crate::game_ui::{GameMode, Score, ScoreValue, gameplay_unpaused};
 use crate::map::MapColliders;
 use crate::player::PlayerCamera;
 
@@ -14,6 +14,7 @@ impl Plugin for CombatPlugin {
         app.init_resource::<WeaponInventory>()
             .init_resource::<ViewModelState>()
             .init_resource::<ShotReport>()
+            .add_systems(OnEnter(GameMode::Playing), reset_shot_report)
             .add_systems(
                 Update,
                 (
@@ -28,7 +29,8 @@ impl Plugin for CombatPlugin {
                     expire_effects,
                 )
                     .chain()
-                    .run_if(in_state(GameMode::Playing)),
+                    .run_if(in_state(GameMode::Playing))
+                    .run_if(gameplay_unpaused),
             );
     }
 }
@@ -766,6 +768,10 @@ fn update_window_title(
         "Bevy FPS Dust Blockout - {} {}/{} - {}",
         stats.label, weapon.ammo, stats.magazine_size, status
     );
+}
+
+fn reset_shot_report(mut shot_report: ResMut<ShotReport>) {
+    *shot_report = ShotReport::default();
 }
 
 fn expire_effects(

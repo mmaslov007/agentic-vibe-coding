@@ -8,14 +8,21 @@ use bevy::{
 
 use crate::collision::{Aabb2, Aabb3};
 use crate::combat::{Hitbox, Shootable};
+use crate::game_ui::{GameMode, MapKind, SelectedMap, gameplay_unpaused};
 
 pub struct MapPlugin;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(MapColliders::default())
-            .add_systems(Startup, spawn_map)
-            .add_systems(Update, drift_clouds);
+            .add_systems(OnEnter(GameMode::Playing), spawn_map)
+            .add_systems(OnEnter(GameMode::Menu), cleanup_map)
+            .add_systems(
+                Update,
+                drift_clouds
+                    .run_if(in_state(GameMode::Playing))
+                    .run_if(gameplay_unpaused),
+            );
     }
 }
 
@@ -23,46 +30,20 @@ impl Plugin for MapPlugin {
 pub struct MapColliders {
     pub walls: Vec<Aabb2>,
     pub shot_blockers: Vec<Aabb3>,
-    pub elevation_zones: Vec<ElevationZone>,
 }
 
-impl MapColliders {
-    pub fn floor_height_at(&self, position: Vec2) -> f32 {
-        self.elevation_zones
-            .iter()
-            .filter(|zone| zone.area.contains_point(position))
-            .map(|zone| zone.height)
-            .fold(0.0, f32::max)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ElevationZone {
-    area: Aabb2,
-    height: f32,
-}
-
-impl ElevationZone {
-    fn from_center_size(center: Vec2, size: Vec2, height: f32) -> Self {
-        Self {
-            area: Aabb2::from_center_size(center, size),
-            height,
-        }
-    }
-}
+#[derive(Component)]
+struct MapEntity;
 
 #[derive(Clone, Copy)]
 enum BlockKind {
-    Floor,
+    Ground,
     Wall,
     Prop,
-    Site,
-    Door,
-    Stone,
-    Awning,
+    Accent,
     Window,
-    Rug,
-    Roof,
+    Foliage,
+    Trunk,
 }
 
 #[derive(Clone, Copy)]
@@ -74,48 +55,20 @@ struct Block {
 }
 
 impl Block {
-    const fn floor(center: Vec3, size: Vec3) -> Self {
+    const fn ground(center: Vec3, size: Vec3) -> Self {
         Self {
             center,
             size,
-            kind: BlockKind::Floor,
+            kind: BlockKind::Ground,
             collides: false,
         }
     }
 
-    const fn wall(center: Vec3, size: Vec3) -> Self {
+    const fn solid(center: Vec3, size: Vec3, kind: BlockKind) -> Self {
         Self {
             center,
             size,
-            kind: BlockKind::Wall,
-            collides: true,
-        }
-    }
-
-    const fn prop(center: Vec3, size: Vec3) -> Self {
-        Self {
-            center,
-            size,
-            kind: BlockKind::Prop,
-            collides: true,
-        }
-    }
-
-    const fn site(center: Vec3, size: Vec3) -> Self {
-        Self {
-            center,
-            size,
-            kind: BlockKind::Site,
-            collides: false,
-        }
-    }
-
-    #[allow(dead_code)]
-    const fn door(center: Vec3, size: Vec3) -> Self {
-        Self {
-            center,
-            size,
-            kind: BlockKind::Door,
+            kind,
             collides: true,
         }
     }
@@ -141,25 +94,87 @@ impl Block {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct PlayerSpawn {
+    pub position: Vec3,
+    pub yaw: f32,
+}
+
+pub fn player_spawn(kind: MapKind) -> PlayerSpawn {
+    let position = match kind {
+        MapKind::Desert => Vec3::new(0.0, 1.65, 31.0),
+        MapKind::Forest => Vec3::new(-2.0, 1.65, 31.0),
+        MapKind::Night => Vec3::new(0.0, 1.65, 30.0),
+    };
+
+    PlayerSpawn {
+        position,
+        yaw: yaw_toward(position, Vec3::ZERO),
+    }
+}
+
+pub fn zombie_spawn_points(kind: MapKind) -> [Vec3; 8] {
+    match kind {
+        MapKind::Desert => [
+            Vec3::new(-31.0, 0.9, -25.0),
+            Vec3::new(30.0, 0.9, -23.0),
+            Vec3::new(-30.0, 0.9, 20.0),
+            Vec3::new(29.0, 0.9, 19.0),
+            Vec3::new(-10.0, 0.9, -12.0),
+            Vec3::new(11.0, 0.9, -10.0),
+            Vec3::new(-22.0, 0.9, 0.0),
+            Vec3::new(22.0, 0.9, 2.0),
+        ],
+        MapKind::Forest => [
+            Vec3::new(-30.0, 0.9, -25.0),
+            Vec3::new(31.0, 0.9, -24.0),
+            Vec3::new(-29.0, 0.9, 19.0),
+            Vec3::new(28.0, 0.9, 20.0),
+            Vec3::new(-9.0, 0.9, -17.0),
+            Vec3::new(13.0, 0.9, -14.0),
+            Vec3::new(-19.0, 0.9, 3.0),
+            Vec3::new(21.0, 0.9, 5.0),
+        ],
+        MapKind::Night => [
+            Vec3::new(-32.0, 0.9, -24.0),
+            Vec3::new(32.0, 0.9, -24.0),
+            Vec3::new(-31.0, 0.9, 20.0),
+            Vec3::new(31.0, 0.9, 20.0),
+            Vec3::new(-12.0, 0.9, -10.0),
+            Vec3::new(12.0, 0.9, -10.0),
+            Vec3::new(-21.0, 0.9, 6.0),
+            Vec3::new(21.0, 0.9, 7.0),
+        ],
+    }
+}
+
 fn spawn_map(
     mut commands: Commands,
+    selected: Res<SelectedMap>,
+    mut clear_color: ResMut<ClearColor>,
+    mut ambient: ResMut<GlobalAmbientLight>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut colliders: ResMut<MapColliders>,
+    existing: Query<Entity, With<MapEntity>>,
 ) {
-    let palette = MapPalette::new(&mut materials, &mut images);
-    let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
 
     colliders.walls.clear();
     colliders.shot_blockers.clear();
-    colliders.elevation_zones.clear();
 
-    for zone in elevation_zones() {
-        colliders.elevation_zones.push(zone);
-    }
+    let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+    let palette = MapPalette::new(selected.kind, &mut materials, &mut images);
+    let spec = map_spec(selected.kind);
 
-    for block in market_town_blockout() {
+    clear_color.0 = spec.sky_color;
+    ambient.color = spec.ambient_color;
+    ambient.brightness = spec.ambient_brightness;
+
+    for block in spec.blocks {
         if block.collides {
             colliders.walls.push(block.collider());
             colliders.shot_blockers.push(block.shot_blocker());
@@ -173,23 +188,44 @@ fn spawn_map(
                 scale: block.size,
                 ..default()
             },
+            MapEntity,
         ));
     }
 
-    spawn_targets(&mut commands, &mut meshes, &mut materials);
-    spawn_clouds(&mut commands, &mut meshes, &mut materials);
-    spawn_lighting(&mut commands);
+    spawn_targets(&mut commands, &mut meshes, &mut materials, &spec.targets);
+    spawn_clouds(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &spec.clouds,
+        selected.kind,
+    );
+    spawn_lighting(&mut commands, selected.kind);
+}
+
+fn cleanup_map(
+    mut commands: Commands,
+    mut colliders: ResMut<MapColliders>,
+    entities: Query<Entity, With<MapEntity>>,
+) {
+    for entity in &entities {
+        commands.entity(entity).despawn();
+    }
+
+    colliders.walls.clear();
+    colliders.shot_blockers.clear();
 }
 
 fn spawn_targets(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    targets: &[TargetSpec],
 ) {
     let mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
     let target_material = materials.add(material(Color::srgb(0.82, 0.08, 0.06)));
 
-    for target in shooting_targets() {
+    for target in targets {
         commands.spawn((
             Mesh3d(mesh.clone()),
             MeshMaterial3d(target_material.clone()),
@@ -200,19 +236,47 @@ fn spawn_targets(
             },
             Shootable::new(target.health),
             Hitbox::from_center_size(target.center, target.size),
+            MapEntity,
         ));
     }
 }
 
-fn spawn_lighting(commands: &mut Commands) {
+fn spawn_lighting(commands: &mut Commands, kind: MapKind) {
+    let (illuminance, position) = match kind {
+        MapKind::Desert => (34_000.0, Vec3::new(-8.0, 16.0, 8.0)),
+        MapKind::Forest => (21_000.0, Vec3::new(-10.0, 18.0, -6.0)),
+        MapKind::Night => (3_200.0, Vec3::new(-6.0, 18.0, 7.0)),
+    };
+
     commands.spawn((
         DirectionalLight {
-            illuminance: 32_000.0,
+            illuminance,
             shadows_enabled: true,
             ..default()
         },
-        Transform::from_xyz(-8.0, 16.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_translation(position).looking_at(Vec3::ZERO, Vec3::Y),
+        MapEntity,
     ));
+
+    if kind == MapKind::Night {
+        for position in [
+            Vec3::new(-18.0, 3.2, 8.0),
+            Vec3::new(18.0, 3.2, 8.0),
+            Vec3::new(-8.0, 3.2, -18.0),
+            Vec3::new(8.0, 3.2, -18.0),
+        ] {
+            commands.spawn((
+                PointLight {
+                    intensity: 650.0,
+                    range: 15.0,
+                    shadows_enabled: true,
+                    ..default()
+                },
+                Transform::from_translation(position),
+                MapEntity,
+            ));
+        }
+    }
 }
 
 #[derive(Component)]
@@ -221,47 +285,53 @@ struct Cloud {
     wrap_x: f32,
 }
 
+#[derive(Clone, Copy)]
+struct CloudSpec {
+    center: Vec3,
+    speed: f32,
+}
+
 fn spawn_clouds(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    clouds: &[CloudSpec],
+    kind: MapKind,
 ) {
     let mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+    let color = match kind {
+        MapKind::Desert => Color::srgba(0.96, 0.94, 0.88, 0.54),
+        MapKind::Forest => Color::srgba(0.90, 0.96, 0.88, 0.46),
+        MapKind::Night => Color::srgba(0.13, 0.16, 0.21, 0.45),
+    };
     let material = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.96, 0.96, 0.92, 0.58),
+        base_color: color,
         alpha_mode: AlphaMode::Blend,
         perceptual_roughness: 1.0,
         unlit: true,
         ..default()
     });
-
-    let clusters = [
-        (Vec3::new(-34.0, 18.0, -18.0), 0.55),
-        (Vec3::new(3.0, 21.0, -29.0), 0.35),
-        (Vec3::new(28.0, 19.5, 12.0), 0.48),
-        (Vec3::new(-8.0, 20.0, 25.0), 0.42),
-    ];
     let puffs = [
-        (Vec3::new(0.0, 0.0, 0.0), Vec3::new(8.5, 0.7, 3.2)),
-        (Vec3::new(-3.4, 0.2, 0.8), Vec3::new(5.4, 0.9, 2.6)),
-        (Vec3::new(3.6, 0.1, -0.5), Vec3::new(6.2, 0.8, 2.8)),
-        (Vec3::new(0.9, 0.35, 1.4), Vec3::new(4.4, 0.8, 2.4)),
+        (Vec3::new(0.0, 0.0, 0.0), Vec3::new(7.0, 0.65, 2.7)),
+        (Vec3::new(-2.7, 0.18, 0.7), Vec3::new(4.6, 0.85, 2.1)),
+        (Vec3::new(2.9, 0.1, -0.4), Vec3::new(5.1, 0.75, 2.2)),
     ];
 
-    for (center, speed) in clusters {
+    for cloud in clouds {
         for (offset, size) in puffs {
             commands.spawn((
                 Mesh3d(mesh.clone()),
                 MeshMaterial3d(material.clone()),
                 Transform {
-                    translation: center + offset,
+                    translation: cloud.center + offset,
                     scale: size,
                     ..default()
                 },
                 Cloud {
-                    speed,
-                    wrap_x: 58.0,
+                    speed: cloud.speed,
+                    wrap_x: 56.0,
                 },
+                MapEntity,
             ));
         }
     }
@@ -276,109 +346,514 @@ fn drift_clouds(time: Res<Time>, mut clouds: Query<(&mut Transform, &Cloud)>) {
     }
 }
 
+struct MapSpec {
+    blocks: Vec<Block>,
+    targets: Vec<TargetSpec>,
+    clouds: Vec<CloudSpec>,
+    sky_color: Color,
+    ambient_color: Color,
+    ambient_brightness: f32,
+}
+
+fn map_spec(kind: MapKind) -> MapSpec {
+    match kind {
+        MapKind::Desert => desert_market(),
+        MapKind::Forest => forest_clearing(),
+        MapKind::Night => night_quarter(),
+    }
+}
+
+fn desert_market() -> MapSpec {
+    let mut blocks = common_bounds(84.0, 72.0, 3.2, BlockKind::Wall);
+    blocks.push(Block::ground(
+        Vec3::new(0.0, -0.05, 0.0),
+        Vec3::new(84.0, 0.1, 72.0),
+    ));
+
+    blocks.extend([
+        Block::solid(
+            Vec3::new(-29.0, 1.65, -12.0),
+            Vec3::new(11.0, 3.3, 22.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(29.0, 1.65, -12.0),
+            Vec3::new(11.0, 3.3, 22.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(-24.0, 1.55, 20.0),
+            Vec3::new(13.0, 3.1, 12.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(24.0, 1.55, 20.0),
+            Vec3::new(13.0, 3.1, 12.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(0.0, 1.45, -26.0),
+            Vec3::new(18.0, 2.9, 7.0),
+            BlockKind::Wall,
+        ),
+        Block::decor(
+            Vec3::new(0.0, 0.01, 7.0),
+            Vec3::new(24.0, 0.04, 16.0),
+            BlockKind::Accent,
+        ),
+    ]);
+
+    add_awning(&mut blocks, Vec3::new(-9.0, 1.9, 6.0));
+    add_awning(&mut blocks, Vec3::new(9.0, 1.9, 6.0));
+    add_windows(&mut blocks, -23.4, -12.0, 20.0, true);
+    add_windows(&mut blocks, 23.4, -12.0, 20.0, true);
+    add_windows(&mut blocks, -24.0, 14.0, 8.0, false);
+    add_windows(&mut blocks, 24.0, 14.0, 8.0, false);
+
+    for position in [
+        Vec3::new(-8.0, 0.55, -5.0),
+        Vec3::new(7.0, 0.55, -6.0),
+        Vec3::new(-17.0, 0.55, 7.0),
+        Vec3::new(17.0, 0.55, 7.0),
+        Vec3::new(0.0, 0.55, 19.0),
+    ] {
+        blocks.push(Block::solid(
+            position,
+            Vec3::new(2.4, 1.1, 2.0),
+            BlockKind::Prop,
+        ));
+    }
+
+    MapSpec {
+        blocks,
+        targets: targets_for(MapKind::Desert),
+        clouds: vec![
+            CloudSpec {
+                center: Vec3::new(-26.0, 18.0, -18.0),
+                speed: 0.42,
+            },
+            CloudSpec {
+                center: Vec3::new(21.0, 20.0, 14.0),
+                speed: 0.36,
+            },
+        ],
+        sky_color: Color::srgb(0.61, 0.72, 0.86),
+        ambient_color: Color::srgb(0.95, 0.86, 0.68),
+        ambient_brightness: 820.0,
+    }
+}
+
+fn forest_clearing() -> MapSpec {
+    let mut blocks = common_bounds(84.0, 72.0, 2.4, BlockKind::Wall);
+    blocks.push(Block::ground(
+        Vec3::new(0.0, -0.05, 0.0),
+        Vec3::new(84.0, 0.1, 72.0),
+    ));
+    blocks.extend([
+        Block::decor(
+            Vec3::new(0.0, 0.01, 2.0),
+            Vec3::new(15.0, 0.04, 62.0),
+            BlockKind::Accent,
+        ),
+        Block::decor(
+            Vec3::new(0.0, 0.02, -6.0),
+            Vec3::new(56.0, 0.04, 11.0),
+            BlockKind::Accent,
+        ),
+        Block::solid(
+            Vec3::new(-15.0, 1.1, -12.0),
+            Vec3::new(12.0, 2.2, 1.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(15.0, 1.1, 12.0),
+            Vec3::new(12.0, 2.2, 1.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(-24.0, 1.1, 12.0),
+            Vec3::new(1.0, 2.2, 12.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(24.0, 1.1, -14.0),
+            Vec3::new(1.0, 2.2, 12.0),
+            BlockKind::Wall,
+        ),
+    ]);
+
+    for position in [
+        Vec2::new(-31.0, -22.0),
+        Vec2::new(-25.0, 22.0),
+        Vec2::new(-13.0, 25.0),
+        Vec2::new(14.0, 24.0),
+        Vec2::new(30.0, 20.0),
+        Vec2::new(31.0, -20.0),
+        Vec2::new(17.0, -27.0),
+        Vec2::new(-18.0, -26.0),
+        Vec2::new(-6.0, 14.0),
+        Vec2::new(7.0, -18.0),
+    ] {
+        add_tree(&mut blocks, position);
+    }
+
+    for position in [
+        Vec3::new(-8.0, 0.45, -4.0),
+        Vec3::new(9.0, 0.45, 4.0),
+        Vec3::new(-29.0, 0.5, -2.0),
+        Vec3::new(29.0, 0.5, 2.0),
+    ] {
+        blocks.push(Block::solid(
+            position,
+            Vec3::new(2.4, 0.9, 1.8),
+            BlockKind::Prop,
+        ));
+    }
+
+    MapSpec {
+        blocks,
+        targets: targets_for(MapKind::Forest),
+        clouds: vec![CloudSpec {
+            center: Vec3::new(-18.0, 20.0, 18.0),
+            speed: 0.28,
+        }],
+        sky_color: Color::srgb(0.50, 0.68, 0.77),
+        ambient_color: Color::srgb(0.70, 0.94, 0.72),
+        ambient_brightness: 640.0,
+    }
+}
+
+fn night_quarter() -> MapSpec {
+    let mut blocks = common_bounds(84.0, 72.0, 3.0, BlockKind::Wall);
+    blocks.push(Block::ground(
+        Vec3::new(0.0, -0.05, 0.0),
+        Vec3::new(84.0, 0.1, 72.0),
+    ));
+    blocks.extend([
+        Block::decor(
+            Vec3::new(0.0, 0.01, 1.0),
+            Vec3::new(20.0, 0.04, 18.0),
+            BlockKind::Accent,
+        ),
+        Block::solid(
+            Vec3::new(-28.0, 1.55, -15.0),
+            Vec3::new(12.0, 3.1, 18.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(28.0, 1.55, -15.0),
+            Vec3::new(12.0, 3.1, 18.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(-27.0, 1.45, 18.0),
+            Vec3::new(13.0, 2.9, 12.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(27.0, 1.45, 18.0),
+            Vec3::new(13.0, 2.9, 12.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(0.0, 1.3, -25.0),
+            Vec3::new(15.0, 2.6, 6.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(-11.0, 0.65, -2.0),
+            Vec3::new(1.0, 1.3, 12.0),
+            BlockKind::Wall,
+        ),
+        Block::solid(
+            Vec3::new(11.0, 0.65, 2.0),
+            Vec3::new(1.0, 1.3, 12.0),
+            BlockKind::Wall,
+        ),
+    ]);
+
+    for position in [
+        Vec3::new(-18.0, 1.4, 8.0),
+        Vec3::new(18.0, 1.4, 8.0),
+        Vec3::new(-8.0, 1.4, -18.0),
+        Vec3::new(8.0, 1.4, -18.0),
+    ] {
+        blocks.push(Block::decor(
+            position,
+            Vec3::new(0.35, 2.8, 0.35),
+            BlockKind::Trunk,
+        ));
+        blocks.push(Block::decor(
+            position + Vec3::Y * 1.45,
+            Vec3::splat(0.9),
+            BlockKind::Window,
+        ));
+    }
+
+    add_windows(&mut blocks, -21.9, -15.0, 11.0, true);
+    add_windows(&mut blocks, 21.9, -15.0, 11.0, true);
+    add_windows(&mut blocks, -27.0, 12.0, 8.0, false);
+    add_windows(&mut blocks, 27.0, 12.0, 8.0, false);
+
+    for position in [
+        Vec3::new(-5.0, 0.55, 13.0),
+        Vec3::new(6.0, 0.55, 13.0),
+        Vec3::new(-18.0, 0.55, -2.0),
+        Vec3::new(18.0, 0.55, -2.0),
+    ] {
+        blocks.push(Block::solid(
+            position,
+            Vec3::new(2.2, 1.1, 2.0),
+            BlockKind::Prop,
+        ));
+    }
+
+    MapSpec {
+        blocks,
+        targets: targets_for(MapKind::Night),
+        clouds: vec![
+            CloudSpec {
+                center: Vec3::new(-25.0, 17.0, -12.0),
+                speed: 0.22,
+            },
+            CloudSpec {
+                center: Vec3::new(24.0, 19.0, 18.0),
+                speed: 0.18,
+            },
+        ],
+        sky_color: Color::srgb(0.05, 0.07, 0.11),
+        ambient_color: Color::srgb(0.30, 0.39, 0.58),
+        ambient_brightness: 210.0,
+    }
+}
+
+fn common_bounds(width: f32, depth: f32, height: f32, kind: BlockKind) -> Vec<Block> {
+    let half_width = width * 0.5;
+    let half_depth = depth * 0.5;
+    let y = height * 0.5;
+
+    vec![
+        Block::solid(
+            Vec3::new(0.0, y, -half_depth),
+            Vec3::new(width, height, 1.0),
+            kind,
+        ),
+        Block::solid(
+            Vec3::new(0.0, y, half_depth),
+            Vec3::new(width, height, 1.0),
+            kind,
+        ),
+        Block::solid(
+            Vec3::new(-half_width, y, 0.0),
+            Vec3::new(1.0, height, depth),
+            kind,
+        ),
+        Block::solid(
+            Vec3::new(half_width, y, 0.0),
+            Vec3::new(1.0, height, depth),
+            kind,
+        ),
+    ]
+}
+
+fn add_awning(blocks: &mut Vec<Block>, center: Vec3) {
+    blocks.push(Block::solid(
+        Vec3::new(center.x, 0.48, center.z),
+        Vec3::new(3.4, 0.95, 1.7),
+        BlockKind::Prop,
+    ));
+    blocks.push(Block::decor(
+        center,
+        Vec3::new(4.6, 0.18, 3.2),
+        BlockKind::Accent,
+    ));
+}
+
+fn add_tree(blocks: &mut Vec<Block>, position: Vec2) {
+    blocks.push(Block::solid(
+        Vec3::new(position.x, 1.15, position.y),
+        Vec3::new(0.85, 2.3, 0.85),
+        BlockKind::Trunk,
+    ));
+    blocks.push(Block::decor(
+        Vec3::new(position.x, 3.0, position.y),
+        Vec3::new(4.3, 2.3, 4.3),
+        BlockKind::Foliage,
+    ));
+}
+
+fn add_windows(blocks: &mut Vec<Block>, x: f32, z: f32, span: f32, vertical_face: bool) {
+    let size = if vertical_face {
+        Vec3::new(0.12, 0.7, span)
+    } else {
+        Vec3::new(span, 0.7, 0.12)
+    };
+
+    blocks.push(Block::decor(Vec3::new(x, 2.0, z), size, BlockKind::Window));
+}
+
+#[derive(Clone, Copy)]
+struct TargetSpec {
+    center: Vec3,
+    size: Vec3,
+    health: f32,
+}
+
+fn targets_for(kind: MapKind) -> Vec<TargetSpec> {
+    let positions = match kind {
+        MapKind::Desert => [
+            Vec3::new(-14.0, 1.2, 8.0),
+            Vec3::new(14.0, 1.2, 8.0),
+            Vec3::new(-8.0, 1.2, -18.0),
+            Vec3::new(8.0, 1.2, -18.0),
+        ],
+        MapKind::Forest => [
+            Vec3::new(-18.0, 1.2, -5.0),
+            Vec3::new(18.0, 1.2, 5.0),
+            Vec3::new(-6.0, 1.2, 18.0),
+            Vec3::new(7.0, 1.2, -18.0),
+        ],
+        MapKind::Night => [
+            Vec3::new(-14.0, 1.2, 10.0),
+            Vec3::new(14.0, 1.2, 10.0),
+            Vec3::new(-8.0, 1.2, -20.0),
+            Vec3::new(8.0, 1.2, -20.0),
+        ],
+    };
+
+    positions
+        .into_iter()
+        .map(|center| TargetSpec {
+            center,
+            size: Vec3::new(1.0, 1.7, 0.25),
+            health: 100.0,
+        })
+        .collect()
+}
+
 struct MapPalette {
-    floor: Handle<StandardMaterial>,
+    ground: Handle<StandardMaterial>,
     wall: Handle<StandardMaterial>,
     prop: Handle<StandardMaterial>,
-    site: Handle<StandardMaterial>,
-    door: Handle<StandardMaterial>,
-    stone: Handle<StandardMaterial>,
-    awning: Handle<StandardMaterial>,
+    accent: Handle<StandardMaterial>,
     window: Handle<StandardMaterial>,
-    rug: Handle<StandardMaterial>,
-    roof: Handle<StandardMaterial>,
+    foliage: Handle<StandardMaterial>,
+    trunk: Handle<StandardMaterial>,
 }
 
 impl MapPalette {
-    fn new(materials: &mut Assets<StandardMaterial>, images: &mut Assets<Image>) -> Self {
-        let sand = images.add(procedural_texture(
-            [181, 160, 118],
-            [210, 190, 146],
-            [136, 117, 83],
+    fn new(
+        kind: MapKind,
+        materials: &mut Assets<StandardMaterial>,
+        images: &mut Assets<Image>,
+    ) -> Self {
+        let colors = palette_colors(kind);
+        let ground = images.add(procedural_texture(
+            colors.ground.0,
+            colors.ground.1,
+            colors.ground.2,
             7,
         ));
-        let plaster = images.add(procedural_texture(
-            [198, 178, 132],
-            [225, 207, 163],
-            [151, 130, 91],
+        let wall = images.add(procedural_texture(
+            colors.wall.0,
+            colors.wall.1,
+            colors.wall.2,
             19,
         ));
-        let crate_wood = images.add(procedural_texture(
-            [116, 91, 63],
-            [151, 121, 83],
-            [72, 52, 35],
+        let prop = images.add(procedural_texture(
+            colors.prop.0,
+            colors.prop.1,
+            colors.prop.2,
             31,
         ));
-        let site_sand = images.add(procedural_texture(
-            [161, 133, 79],
-            [194, 166, 105],
-            [111, 89, 51],
+        let accent = images.add(procedural_texture(
+            colors.accent.0,
+            colors.accent.1,
+            colors.accent.2,
             43,
         ));
-        let door_wood = images.add(procedural_texture(
-            [82, 55, 31],
-            [122, 84, 47],
-            [41, 27, 17],
+        let window = images.add(procedural_texture(
+            colors.window.0,
+            colors.window.1,
+            colors.window.2,
             53,
         ));
-        let limestone = images.add(procedural_texture(
-            [166, 151, 117],
-            [203, 188, 150],
-            [101, 91, 69],
+        let foliage = images.add(procedural_texture(
+            colors.foliage.0,
+            colors.foliage.1,
+            colors.foliage.2,
             67,
         ));
-        let canvas = images.add(procedural_texture(
-            [152, 54, 43],
-            [209, 118, 82],
-            [85, 31, 29],
-            73,
-        ));
-        let glass = images.add(procedural_texture(
-            [34, 58, 66],
-            [78, 111, 121],
-            [15, 24, 29],
-            83,
-        ));
-        let woven_rug = images.add(procedural_texture(
-            [122, 38, 47],
-            [199, 153, 80],
-            [42, 63, 78],
-            97,
-        ));
-        let roof_tile = images.add(procedural_texture(
-            [182, 148, 95],
-            [221, 185, 121],
-            [105, 81, 50],
-            109,
+        let trunk = images.add(procedural_texture(
+            colors.trunk.0,
+            colors.trunk.1,
+            colors.trunk.2,
+            79,
         ));
 
         Self {
-            floor: materials.add(textured_material(sand, Vec2::new(12.0, 12.0))),
-            wall: materials.add(textured_material(plaster, Vec2::new(4.0, 3.0))),
-            prop: materials.add(textured_material(crate_wood, Vec2::new(2.0, 2.0))),
-            site: materials.add(textured_material(site_sand, Vec2::new(5.0, 5.0))),
-            door: materials.add(textured_material(door_wood, Vec2::new(2.0, 2.0))),
-            stone: materials.add(textured_material(limestone, Vec2::new(5.0, 4.0))),
-            awning: materials.add(textured_material(canvas, Vec2::new(1.5, 1.5))),
-            window: materials.add(textured_material(glass, Vec2::new(1.0, 1.0))),
-            rug: materials.add(textured_material(woven_rug, Vec2::new(2.0, 1.0))),
-            roof: materials.add(textured_material(roof_tile, Vec2::new(4.0, 4.0))),
+            ground: materials.add(textured_material(ground, Vec2::new(12.0, 12.0))),
+            wall: materials.add(textured_material(wall, Vec2::new(4.0, 3.0))),
+            prop: materials.add(textured_material(prop, Vec2::new(2.0, 2.0))),
+            accent: materials.add(textured_material(accent, Vec2::new(3.0, 3.0))),
+            window: materials.add(textured_material(window, Vec2::new(1.0, 1.0))),
+            foliage: materials.add(textured_material(foliage, Vec2::new(2.5, 2.5))),
+            trunk: materials.add(textured_material(trunk, Vec2::new(2.0, 2.0))),
         }
     }
 
     fn material_for(&self, kind: BlockKind) -> Handle<StandardMaterial> {
         match kind {
-            BlockKind::Floor => self.floor.clone(),
+            BlockKind::Ground => self.ground.clone(),
             BlockKind::Wall => self.wall.clone(),
             BlockKind::Prop => self.prop.clone(),
-            BlockKind::Site => self.site.clone(),
-            BlockKind::Door => self.door.clone(),
-            BlockKind::Stone => self.stone.clone(),
-            BlockKind::Awning => self.awning.clone(),
+            BlockKind::Accent => self.accent.clone(),
             BlockKind::Window => self.window.clone(),
-            BlockKind::Rug => self.rug.clone(),
-            BlockKind::Roof => self.roof.clone(),
+            BlockKind::Foliage => self.foliage.clone(),
+            BlockKind::Trunk => self.trunk.clone(),
         }
+    }
+}
+
+struct PaletteColors {
+    ground: ([u8; 3], [u8; 3], [u8; 3]),
+    wall: ([u8; 3], [u8; 3], [u8; 3]),
+    prop: ([u8; 3], [u8; 3], [u8; 3]),
+    accent: ([u8; 3], [u8; 3], [u8; 3]),
+    window: ([u8; 3], [u8; 3], [u8; 3]),
+    foliage: ([u8; 3], [u8; 3], [u8; 3]),
+    trunk: ([u8; 3], [u8; 3], [u8; 3]),
+}
+
+fn palette_colors(kind: MapKind) -> PaletteColors {
+    match kind {
+        MapKind::Desert => PaletteColors {
+            ground: ([181, 160, 118], [212, 193, 149], [130, 112, 81]),
+            wall: ([197, 176, 130], [227, 207, 164], [142, 121, 86]),
+            prop: ([116, 91, 63], [151, 121, 83], [72, 52, 35]),
+            accent: ([152, 54, 43], [209, 118, 82], [85, 31, 29]),
+            window: ([34, 58, 66], [78, 111, 121], [15, 24, 29]),
+            foliage: ([88, 106, 55], [130, 149, 76], [46, 61, 34]),
+            trunk: ([94, 65, 42], [131, 91, 58], [51, 35, 24]),
+        },
+        MapKind::Forest => PaletteColors {
+            ground: ([75, 119, 69], [115, 163, 94], [43, 75, 43]),
+            wall: ([105, 113, 92], [148, 158, 128], [59, 67, 55]),
+            prop: ([92, 83, 62], [135, 123, 88], [49, 44, 34]),
+            accent: ([143, 128, 80], [190, 170, 111], [83, 75, 50]),
+            window: ([76, 103, 87], [129, 157, 132], [38, 58, 49]),
+            foliage: ([48, 132, 55], [92, 178, 88], [24, 77, 34]),
+            trunk: ([92, 62, 40], [135, 95, 61], [48, 32, 22]),
+        },
+        MapKind::Night => PaletteColors {
+            ground: ([45, 49, 60], [71, 76, 90], [25, 28, 36]),
+            wall: ([67, 72, 84], [99, 107, 123], [35, 38, 48]),
+            prop: ([75, 57, 46], [111, 84, 67], [39, 30, 26]),
+            accent: ([73, 84, 103], [108, 126, 151], [35, 43, 56]),
+            window: ([205, 151, 69], [245, 198, 101], [111, 75, 37]),
+            foliage: ([33, 71, 58], [54, 103, 82], [17, 41, 35]),
+            trunk: ([58, 46, 43], [87, 68, 62], [31, 25, 25]),
+        },
     }
 }
 
@@ -466,522 +941,7 @@ fn lerp_u8(a: u8, b: u8, amount: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * amount).round() as u8
 }
 
-fn market_town_blockout() -> Vec<Block> {
-    let mut blocks = vec![
-        Block::floor(Vec3::new(0.0, -0.05, 0.0), Vec3::new(96.0, 0.1, 84.0)),
-        Block::wall(Vec3::new(0.0, 1.65, -42.0), Vec3::new(96.0, 3.3, 1.0)),
-        Block::wall(Vec3::new(0.0, 1.65, 42.0), Vec3::new(96.0, 3.3, 1.0)),
-        Block::wall(Vec3::new(-48.0, 1.65, 0.0), Vec3::new(1.0, 3.3, 84.0)),
-        Block::wall(Vec3::new(48.0, 1.65, 0.0), Vec3::new(1.0, 3.3, 84.0)),
-        Block::site(Vec3::new(0.0, 0.01, 22.0), Vec3::new(18.0, 0.04, 13.0)),
-        Block::site(Vec3::new(0.0, 0.01, -14.0), Vec3::new(16.0, 0.04, 12.0)),
-        Block::decor(
-            Vec3::new(0.0, 0.04, 24.0),
-            Vec3::new(10.0, 0.05, 2.6),
-            BlockKind::Rug,
-        ),
-        Block::decor(
-            Vec3::new(-2.5, 0.04, -12.0),
-            Vec3::new(8.5, 0.05, 2.2),
-            BlockKind::Rug,
-        ),
-        Block::wall(Vec3::new(-12.5, 1.45, 3.0), Vec3::new(1.0, 2.9, 20.0)),
-        Block::wall(Vec3::new(13.0, 1.45, 2.0), Vec3::new(1.0, 2.9, 18.0)),
-        Block::wall(Vec3::new(0.0, 1.45, 4.0), Vec3::new(8.0, 2.9, 1.0)),
-        Block::wall(Vec3::new(-1.0, 1.45, -25.0), Vec3::new(11.0, 2.9, 1.0)),
-        Block::wall(Vec3::new(8.0, 1.45, -30.0), Vec3::new(1.0, 2.9, 10.0)),
-        Block::wall(Vec3::new(-13.0, 1.45, -31.0), Vec3::new(1.0, 2.9, 12.0)),
-        Block::prop(Vec3::new(-2.5, 0.65, 2.0), Vec3::new(2.8, 1.3, 2.0)),
-        Block::prop(Vec3::new(6.0, 0.55, 8.0), Vec3::new(2.2, 1.1, 1.8)),
-        Block::prop(Vec3::new(-7.5, 0.55, -6.5), Vec3::new(2.1, 1.1, 2.0)),
-        Block::prop(Vec3::new(8.0, 0.55, -20.0), Vec3::new(2.2, 1.1, 2.2)),
-        Block::decor(
-            Vec3::new(0.0, 3.15, -2.0),
-            Vec3::new(9.0, 0.25, 1.0),
-            BlockKind::Stone,
-        ),
-    ];
-
-    add_house(
-        &mut blocks,
-        Vec2::new(-31.0, 21.0),
-        Vec2::new(17.0, 13.5),
-        3.4,
-        DoorSide::East,
-    );
-    add_house(
-        &mut blocks,
-        Vec2::new(-31.0, -20.0),
-        Vec2::new(18.0, 16.0),
-        3.6,
-        DoorSide::East,
-    );
-    add_house(
-        &mut blocks,
-        Vec2::new(29.0, 20.0),
-        Vec2::new(17.0, 14.5),
-        3.5,
-        DoorSide::West,
-    );
-    add_house(
-        &mut blocks,
-        Vec2::new(31.0, -18.0),
-        Vec2::new(18.0, 16.0),
-        3.7,
-        DoorSide::West,
-    );
-    add_house(
-        &mut blocks,
-        Vec2::new(-4.0, -21.0),
-        Vec2::new(13.5, 10.0),
-        3.2,
-        DoorSide::South,
-    );
-    add_house(
-        &mut blocks,
-        Vec2::new(10.0, 18.0),
-        Vec2::new(13.0, 10.0),
-        3.1,
-        DoorSide::North,
-    );
-
-    for z in [-31.0, -21.0, -11.0, 1.0, 13.0, 25.0] {
-        add_market_stall(&mut blocks, Vec2::new(-18.0, z), true);
-    }
-    for z in [-27.0, -15.0, -3.0, 9.0, 21.0, 31.0] {
-        add_market_stall(&mut blocks, Vec2::new(19.0, z), false);
-    }
-
-    add_window_x(&mut blocks, Vec3::new(-31.0, 2.15, 14.2), 9.0);
-    add_window_x(&mut blocks, Vec3::new(-31.0, 2.2, -12.0), 10.0);
-    add_window_x(&mut blocks, Vec3::new(29.0, 2.15, 12.75), 9.0);
-    add_window_x(&mut blocks, Vec3::new(31.0, 2.2, -10.0), 10.0);
-    add_window_z(&mut blocks, Vec3::new(-22.5, 2.15, 21.0), 7.0);
-    add_window_z(&mut blocks, Vec3::new(-22.0, 2.15, -20.0), 7.0);
-    add_window_z(&mut blocks, Vec3::new(20.5, 2.15, 20.0), 7.0);
-    add_window_z(&mut blocks, Vec3::new(22.0, 2.15, -18.0), 7.0);
-    add_window_x(&mut blocks, Vec3::new(-4.0, 2.0, -16.0), 6.0);
-    add_window_x(&mut blocks, Vec3::new(10.0, 2.0, 23.0), 6.0);
-
-    add_stairs(
-        &mut blocks,
-        Vec2::new(-22.2, 13.8),
-        Vec2::new(0.0, 1.0),
-        7,
-        2.4,
-    );
-    add_stairs(
-        &mut blocks,
-        Vec2::new(-22.0, -11.8),
-        Vec2::new(0.0, -1.0),
-        7,
-        2.6,
-    );
-    add_stairs(
-        &mut blocks,
-        Vec2::new(20.5, 12.2),
-        Vec2::new(0.0, 1.0),
-        7,
-        2.5,
-    );
-    add_stairs(
-        &mut blocks,
-        Vec2::new(22.0, -9.8),
-        Vec2::new(0.0, -1.0),
-        7,
-        2.7,
-    );
-    add_stairs(
-        &mut blocks,
-        Vec2::new(5.0, -16.0),
-        Vec2::new(1.0, 0.0),
-        6,
-        1.6,
-    );
-    add_stairs(
-        &mut blocks,
-        Vec2::new(3.0, 23.2),
-        Vec2::new(1.0, 0.0),
-        6,
-        1.4,
-    );
-
-    blocks
-}
-
-fn elevation_zones() -> Vec<ElevationZone> {
-    vec![
-        ElevationZone::from_center_size(Vec2::new(-31.0, 21.0), Vec2::new(11.0, 8.0), 2.4),
-        ElevationZone::from_center_size(Vec2::new(-31.0, -20.0), Vec2::new(12.0, 10.0), 2.6),
-        ElevationZone::from_center_size(Vec2::new(29.0, 20.0), Vec2::new(11.0, 9.0), 2.5),
-        ElevationZone::from_center_size(Vec2::new(31.0, -18.0), Vec2::new(12.0, 10.0), 2.7),
-        ElevationZone::from_center_size(Vec2::new(-22.2, 17.0), Vec2::new(2.8, 7.8), 1.2),
-        ElevationZone::from_center_size(Vec2::new(-22.0, -15.0), Vec2::new(2.8, 7.8), 1.3),
-        ElevationZone::from_center_size(Vec2::new(20.5, 15.5), Vec2::new(2.8, 7.8), 1.2),
-        ElevationZone::from_center_size(Vec2::new(22.0, -13.0), Vec2::new(2.8, 7.8), 1.35),
-        ElevationZone::from_center_size(Vec2::new(8.0, -21.0), Vec2::new(7.0, 5.5), 1.6),
-        ElevationZone::from_center_size(Vec2::new(6.0, 18.0), Vec2::new(8.0, 5.5), 1.4),
-    ]
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DoorSide {
-    North,
-    South,
-    East,
-    West,
-}
-
-fn add_house(blocks: &mut Vec<Block>, center: Vec2, size: Vec2, height: f32, door: DoorSide) {
-    let thickness = 0.75;
-    let gap = 3.4;
-    let north_z = center.y - size.y * 0.5;
-    let south_z = center.y + size.y * 0.5;
-    let west_x = center.x - size.x * 0.5;
-    let east_x = center.x + size.x * 0.5;
-
-    add_horizontal_wall(
-        blocks,
-        center.x,
-        north_z,
-        size.x,
-        height,
-        door == DoorSide::North,
-    );
-    add_horizontal_wall(
-        blocks,
-        center.x,
-        south_z,
-        size.x,
-        height,
-        door == DoorSide::South,
-    );
-    add_vertical_wall(
-        blocks,
-        west_x,
-        center.y,
-        size.y,
-        height,
-        door == DoorSide::West,
-    );
-    add_vertical_wall(
-        blocks,
-        east_x,
-        center.y,
-        size.y,
-        height,
-        door == DoorSide::East,
-    );
-
-    blocks.push(Block::decor(
-        Vec3::new(center.x, height + 0.07, center.y),
-        Vec3::new(size.x, 0.14, size.y),
-        BlockKind::Roof,
-    ));
-    blocks.push(Block::decor(
-        Vec3::new(center.x, height + 0.55, north_z),
-        Vec3::new(size.x, 0.8, thickness),
-        BlockKind::Stone,
-    ));
-    blocks.push(Block::decor(
-        Vec3::new(center.x, height + 0.55, south_z),
-        Vec3::new(size.x, 0.8, thickness),
-        BlockKind::Stone,
-    ));
-    blocks.push(Block::decor(
-        Vec3::new(west_x, height + 0.55, center.y),
-        Vec3::new(thickness, 0.8, size.y),
-        BlockKind::Stone,
-    ));
-    blocks.push(Block::decor(
-        Vec3::new(east_x, height + 0.55, center.y),
-        Vec3::new(thickness, 0.8, size.y),
-        BlockKind::Stone,
-    ));
-
-    if matches!(door, DoorSide::North | DoorSide::South) {
-        let door_z = if door == DoorSide::North {
-            north_z + 0.03
-        } else {
-            south_z - 0.03
-        };
-        blocks.push(Block::decor(
-            Vec3::new(center.x, 1.05, door_z),
-            Vec3::new(gap * 0.65, 2.1, 0.12),
-            BlockKind::Door,
-        ));
-    } else {
-        let door_x = if door == DoorSide::West {
-            west_x + 0.03
-        } else {
-            east_x - 0.03
-        };
-        blocks.push(Block::decor(
-            Vec3::new(door_x, 1.05, center.y),
-            Vec3::new(0.12, 2.1, gap * 0.65),
-            BlockKind::Door,
-        ));
-    }
-}
-
-fn add_horizontal_wall(
-    blocks: &mut Vec<Block>,
-    center_x: f32,
-    z: f32,
-    length: f32,
-    height: f32,
-    split_for_door: bool,
-) {
-    let thickness = 0.75;
-    let y = height * 0.5;
-    if split_for_door {
-        let segment = (length - 3.4) * 0.5;
-        blocks.push(Block::wall(
-            Vec3::new(center_x - 1.7 - segment * 0.5, y, z),
-            Vec3::new(segment, height, thickness),
-        ));
-        blocks.push(Block::wall(
-            Vec3::new(center_x + 1.7 + segment * 0.5, y, z),
-            Vec3::new(segment, height, thickness),
-        ));
-    } else {
-        blocks.push(Block::wall(
-            Vec3::new(center_x, y, z),
-            Vec3::new(length, height, thickness),
-        ));
-    }
-}
-
-fn add_vertical_wall(
-    blocks: &mut Vec<Block>,
-    x: f32,
-    center_z: f32,
-    length: f32,
-    height: f32,
-    split_for_door: bool,
-) {
-    let thickness = 0.75;
-    let y = height * 0.5;
-    if split_for_door {
-        let segment = (length - 3.4) * 0.5;
-        blocks.push(Block::wall(
-            Vec3::new(x, y, center_z - 1.7 - segment * 0.5),
-            Vec3::new(thickness, height, segment),
-        ));
-        blocks.push(Block::wall(
-            Vec3::new(x, y, center_z + 1.7 + segment * 0.5),
-            Vec3::new(thickness, height, segment),
-        ));
-    } else {
-        blocks.push(Block::wall(
-            Vec3::new(x, y, center_z),
-            Vec3::new(thickness, height, length),
-        ));
-    }
-}
-
-fn add_market_stall(blocks: &mut Vec<Block>, center: Vec2, awning_to_east: bool) {
-    blocks.push(Block::prop(
-        Vec3::new(center.x, 0.48, center.y),
-        Vec3::new(3.2, 0.95, 1.6),
-    ));
-    blocks.push(Block::prop(
-        Vec3::new(
-            center.x + if awning_to_east { -1.1 } else { 1.1 },
-            0.82,
-            center.y + 1.25,
-        ),
-        Vec3::new(1.0, 1.65, 1.0),
-    ));
-    blocks.push(Block::decor(
-        Vec3::new(center.x, 2.0, center.y),
-        Vec3::new(4.4, 0.18, 3.2),
-        BlockKind::Awning,
-    ));
-    blocks.push(Block::decor(
-        Vec3::new(center.x, 0.035, center.y - 2.2),
-        Vec3::new(3.8, 0.05, 1.4),
-        BlockKind::Rug,
-    ));
-}
-
-fn add_window_x(blocks: &mut Vec<Block>, center: Vec3, width: f32) {
-    blocks.push(Block::decor(
-        center,
-        Vec3::new(width, 0.65, 0.12),
-        BlockKind::Window,
-    ));
-}
-
-fn add_window_z(blocks: &mut Vec<Block>, center: Vec3, width: f32) {
-    blocks.push(Block::decor(
-        center,
-        Vec3::new(0.12, 0.65, width),
-        BlockKind::Window,
-    ));
-}
-
-fn add_stairs(
-    blocks: &mut Vec<Block>,
-    start: Vec2,
-    direction: Vec2,
-    steps: usize,
-    final_height: f32,
-) {
-    let direction = direction.normalize_or_zero();
-    let right = Vec2::new(direction.y, -direction.x);
-    let step_depth = 0.82;
-    let width = 2.6;
-
-    for index in 0..steps {
-        let progress = (index + 1) as f32 / steps as f32;
-        let height = final_height * progress;
-        let center = start + direction * (index as f32 * step_depth) + right * 0.0;
-        blocks.push(Block::decor(
-            Vec3::new(center.x, height * 0.5, center.y),
-            Vec3::new(width, height.max(0.12), step_depth * 0.86),
-            BlockKind::Stone,
-        ));
-    }
-}
-
-#[allow(dead_code)]
-fn dust_blockout() -> Vec<Block> {
-    let mut blocks = vec![
-        Block::floor(Vec3::new(0.0, -0.05, 0.0), Vec3::new(90.0, 0.1, 78.0)),
-        // Outer arena bounds. The routes inside are a Dust2-style blockout:
-        // T spawn south, Long A west, A site northwest, Mid/Cat center,
-        // CT spawn north-center, B tunnels east, and B site northeast.
-        Block::wall(Vec3::new(0.0, 1.5, -39.0), Vec3::new(90.0, 3.0, 1.0)),
-        Block::wall(Vec3::new(0.0, 1.5, 39.0), Vec3::new(90.0, 3.0, 1.0)),
-        Block::wall(Vec3::new(-45.0, 1.5, 0.0), Vec3::new(1.0, 3.0, 78.0)),
-        Block::wall(Vec3::new(45.0, 1.5, 0.0), Vec3::new(1.0, 3.0, 78.0)),
-        // T spawn, outside long, and long doors.
-        Block::wall(Vec3::new(-20.0, 1.35, 26.0), Vec3::new(1.0, 2.7, 24.0)),
-        Block::wall(Vec3::new(14.0, 1.35, 27.0), Vec3::new(1.0, 2.7, 20.0)),
-        Block::wall(Vec3::new(-31.5, 1.35, 3.0), Vec3::new(1.0, 2.7, 35.0)),
-        Block::wall(Vec3::new(-37.5, 1.35, 19.8), Vec3::new(3.8, 2.7, 0.8)),
-        Block::wall(Vec3::new(-31.2, 1.35, 19.8), Vec3::new(2.6, 2.7, 0.8)),
-        Block::door(Vec3::new(-34.8, 1.25, 19.4), Vec3::new(0.45, 2.5, 2.7)),
-        Block::door(Vec3::new(-33.2, 1.25, 19.4), Vec3::new(0.45, 2.5, 2.7)),
-        Block::prop(Vec3::new(-35.0, 0.45, 29.0), Vec3::new(2.8, 0.9, 2.0)),
-        // A Long, pit, car, cross, and A site.
-        Block::wall(Vec3::new(-31.5, 1.35, -13.0), Vec3::new(1.0, 2.7, 13.0)),
-        Block::wall(Vec3::new(-24.0, 1.35, -18.5), Vec3::new(14.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(-14.0, 1.35, -27.0), Vec3::new(1.0, 2.7, 17.0)),
-        Block::wall(Vec3::new(-24.0, 1.35, -34.2), Vec3::new(23.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(-38.5, 0.8, -25.5), Vec3::new(5.0, 1.6, 5.0)),
-        Block::prop(Vec3::new(-22.0, 0.7, -20.8), Vec3::new(3.0, 1.4, 1.8)),
-        Block::prop(Vec3::new(-28.0, 0.55, -30.0), Vec3::new(2.4, 1.1, 2.2)),
-        Block::prop(Vec3::new(-18.5, 0.55, -31.0), Vec3::new(2.2, 1.1, 2.2)),
-        Block::site(Vec3::new(-24.5, 0.01, -28.5), Vec3::new(14.0, 0.04, 10.0)),
-        // Mid, Xbox, mid doors, CT spawn, and CT-to-B/A rotations.
-        Block::wall(Vec3::new(-7.5, 1.35, 18.0), Vec3::new(1.0, 2.7, 22.0)),
-        Block::wall(Vec3::new(8.0, 1.35, 18.5), Vec3::new(1.0, 2.7, 19.0)),
-        Block::wall(Vec3::new(-1.0, 1.35, 7.0), Vec3::new(12.0, 2.7, 1.0)),
-        Block::prop(Vec3::new(-2.4, 0.65, 2.0), Vec3::new(3.0, 1.3, 2.2)),
-        Block::door(Vec3::new(4.4, 1.25, -7.5), Vec3::new(0.45, 2.5, 3.4)),
-        Block::door(Vec3::new(6.3, 1.25, -7.5), Vec3::new(0.45, 2.5, 3.4)),
-        Block::wall(Vec3::new(10.0, 1.35, -9.0), Vec3::new(1.0, 2.7, 12.0)),
-        Block::wall(Vec3::new(17.0, 1.35, -16.0), Vec3::new(14.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(2.5, 1.35, -21.5), Vec3::new(15.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(18.5, 1.35, -26.0), Vec3::new(1.0, 2.7, 13.0)),
-        // Catwalk, short, and A short stairs.
-        Block::wall(Vec3::new(-18.0, 1.35, -7.8), Vec3::new(20.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(-18.0, 1.35, -13.6), Vec3::new(20.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(-27.5, 1.35, -16.0), Vec3::new(1.0, 2.7, 6.0)),
-        Block::decor(
-            Vec3::new(-22.0, 0.18, -10.8),
-            Vec3::new(9.0, 0.25, 4.3),
-            BlockKind::Floor,
-        ),
-        Block::prop(Vec3::new(-24.0, 0.35, -14.8), Vec3::new(3.0, 0.7, 1.2)),
-        // Outside tunnels, lower tunnels, upper tunnels, and B entrance.
-        Block::wall(Vec3::new(21.0, 1.35, 18.0), Vec3::new(1.0, 2.7, 24.0)),
-        Block::wall(Vec3::new(37.0, 1.35, 6.0), Vec3::new(1.0, 2.7, 42.0)),
-        Block::wall(Vec3::new(23.5, 1.35, 19.0), Vec3::new(5.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(35.5, 1.35, 19.0), Vec3::new(3.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(23.5, 1.35, -12.0), Vec3::new(5.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(35.5, 1.35, -12.0), Vec3::new(3.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(14.5, 1.35, 5.2), Vec3::new(13.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(14.5, 1.35, 0.0), Vec3::new(13.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(21.0, 1.35, -5.0), Vec3::new(1.0, 2.7, 11.0)),
-        Block::prop(Vec3::new(29.0, 0.55, 28.0), Vec3::new(2.4, 1.1, 2.2)),
-        // B site, B doors, platform, car, and boxes.
-        Block::wall(Vec3::new(24.0, 1.35, -18.5), Vec3::new(11.0, 2.7, 1.0)),
-        Block::wall(Vec3::new(23.5, 1.35, -30.5), Vec3::new(1.0, 2.7, 16.0)),
-        Block::wall(Vec3::new(34.5, 1.35, -31.5), Vec3::new(20.0, 2.7, 1.0)),
-        Block::door(Vec3::new(20.7, 1.25, -18.5), Vec3::new(0.45, 2.5, 3.1)),
-        Block::door(Vec3::new(22.4, 1.25, -18.5), Vec3::new(0.45, 2.5, 3.1)),
-        Block::site(Vec3::new(32.5, 0.01, -25.5), Vec3::new(13.0, 0.04, 10.0)),
-        Block::prop(Vec3::new(31.5, 0.75, -25.2), Vec3::new(3.0, 1.5, 2.8)),
-        Block::prop(Vec3::new(36.5, 0.55, -23.0), Vec3::new(2.3, 1.1, 2.2)),
-        Block::prop(Vec3::new(27.0, 0.55, -28.8), Vec3::new(2.4, 1.1, 2.0)),
-        Block::prop(Vec3::new(39.0, 0.45, -28.0), Vec3::new(1.8, 0.9, 2.6)),
-    ];
-
-    add_arch_posts(&mut blocks, Vec3::new(-34.0, 1.4, 19.3));
-    add_arch_posts(&mut blocks, Vec3::new(5.4, 1.4, -7.5));
-    add_arch_posts(&mut blocks, Vec3::new(21.6, 1.4, -18.5));
-
-    blocks
-}
-
-#[derive(Clone, Copy)]
-struct TargetSpec {
-    center: Vec3,
-    size: Vec3,
-    health: f32,
-}
-
-fn shooting_targets() -> [TargetSpec; 6] {
-    [
-        TargetSpec {
-            center: Vec3::new(-7.0, 1.2, 24.0),
-            size: Vec3::new(1.0, 1.7, 0.25),
-            health: 100.0,
-        },
-        TargetSpec {
-            center: Vec3::new(7.0, 1.2, 24.0),
-            size: Vec3::new(1.0, 1.7, 0.25),
-            health: 100.0,
-        },
-        TargetSpec {
-            center: Vec3::new(-18.0, 1.2, -5.0),
-            size: Vec3::new(1.0, 1.7, 0.25),
-            health: 100.0,
-        },
-        TargetSpec {
-            center: Vec3::new(19.0, 1.2, 2.0),
-            size: Vec3::new(1.0, 1.7, 0.25),
-            health: 100.0,
-        },
-        TargetSpec {
-            center: Vec3::new(-4.0, 1.2, -13.5),
-            size: Vec3::new(1.0, 1.7, 0.25),
-            health: 100.0,
-        },
-        TargetSpec {
-            center: Vec3::new(10.0, 1.2, -27.0),
-            size: Vec3::new(1.0, 1.7, 0.25),
-            health: 100.0,
-        },
-    ]
-}
-
-#[allow(dead_code)]
-fn add_arch_posts(blocks: &mut Vec<Block>, center: Vec3) {
-    blocks.push(Block::wall(
-        Vec3::new(center.x - 1.8, center.y, center.z),
-        Vec3::new(0.6, 2.8, 1.0),
-    ));
-    blocks.push(Block::wall(
-        Vec3::new(center.x + 1.8, center.y, center.z),
-        Vec3::new(0.6, 2.8, 1.0),
-    ));
-    blocks.push(Block::decor(
-        Vec3::new(center.x, center.y + 1.2, center.z),
-        Vec3::new(4.2, 0.5, 1.0),
-        BlockKind::Wall,
-    ));
+fn yaw_toward(from: Vec3, target: Vec3) -> f32 {
+    let direction = Vec2::new(target.x - from.x, target.z - from.z).normalize_or_zero();
+    (-direction.x).atan2(-direction.y)
 }

@@ -3,25 +3,28 @@ use bevy::prelude::*;
 use crate::audio_fx::{SoundEffects, play_sound};
 use crate::collision::move_circle_through_aabbs;
 use crate::combat::{Hitbox, Shootable, ShotReport};
-use crate::game_ui::{GameMode, ScoreValue};
-use crate::map::MapColliders;
+use crate::game_ui::{GameMode, ScoreValue, SelectedMap, gameplay_unpaused};
+use crate::map::{MapColliders, zombie_spawn_points};
 use crate::player::PlayerCamera;
 
 pub struct ZombiePlugin;
 
 impl Plugin for ZombiePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_zombies).add_systems(
-            Update,
-            (
-                wake_zombies,
-                move_zombies,
-                animate_zombies,
-                update_zombie_health_bars,
-            )
-                .chain()
-                .run_if(in_state(GameMode::Playing)),
-        );
+        app.add_systems(OnEnter(GameMode::Playing), spawn_zombies)
+            .add_systems(OnEnter(GameMode::Menu), cleanup_zombies)
+            .add_systems(
+                Update,
+                (
+                    wake_zombies,
+                    move_zombies,
+                    animate_zombies,
+                    update_zombie_health_bars,
+                )
+                    .chain()
+                    .run_if(in_state(GameMode::Playing))
+                    .run_if(gameplay_unpaused),
+            );
     }
 }
 
@@ -64,6 +67,7 @@ struct ZombieHealthFill {
 
 fn spawn_zombies(
     mut commands: Commands,
+    selected_map: Res<SelectedMap>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -74,7 +78,10 @@ fn spawn_zombies(
     let health_back = materials.add(zombie_material(Color::srgb(0.28, 0.04, 0.03)));
     let health_fill = materials.add(zombie_material(Color::srgb(0.18, 0.86, 0.22)));
 
-    for (index, position) in zombie_spawn_points().into_iter().enumerate() {
+    for (index, position) in zombie_spawn_points(selected_map.kind)
+        .into_iter()
+        .enumerate()
+    {
         let direction = initial_direction(index);
         commands
             .spawn((
@@ -261,7 +268,7 @@ fn move_zombies(
         }
 
         transform.translation.x = resolved.x;
-        transform.translation.y = ZOMBIE_CENTER_Y + colliders.floor_height_at(resolved);
+        transform.translation.y = ZOMBIE_CENTER_Y;
         transform.translation.z = resolved.y;
 
         let facing = if resolved.distance_squared(current) > 0.0001 {
@@ -329,17 +336,10 @@ fn update_zombie_health_bars(
     }
 }
 
-fn zombie_spawn_points() -> [Vec3; 8] {
-    [
-        Vec3::new(-38.0, ZOMBIE_CENTER_Y, 30.0),
-        Vec3::new(38.0, ZOMBIE_CENTER_Y, 29.0),
-        Vec3::new(-18.0, ZOMBIE_CENTER_Y, 5.0),
-        Vec3::new(19.0, ZOMBIE_CENTER_Y, -3.5),
-        Vec3::new(-2.0, ZOMBIE_CENTER_Y, -11.0),
-        Vec3::new(-37.0, ZOMBIE_CENTER_Y, -24.0),
-        Vec3::new(37.0, ZOMBIE_CENTER_Y, -25.5),
-        Vec3::new(1.5, ZOMBIE_CENTER_Y, -34.0),
-    ]
+fn cleanup_zombies(mut commands: Commands, zombies: Query<Entity, With<Zombie>>) {
+    for entity in &zombies {
+        commands.entity(entity).despawn();
+    }
 }
 
 fn initial_direction(index: usize) -> Vec2 {
