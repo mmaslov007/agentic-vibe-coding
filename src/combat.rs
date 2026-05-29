@@ -1,7 +1,9 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
+use crate::audio_fx::{SoundEffects, play_sound};
 use crate::collision::Aabb3;
+use crate::game_ui::{GameMode, Score, ScoreValue};
 use crate::map::MapColliders;
 use crate::player::PlayerCamera;
 
@@ -25,7 +27,8 @@ impl Plugin for CombatPlugin {
                     update_window_title,
                     expire_effects,
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(in_state(GameMode::Playing)),
             );
     }
 }
@@ -35,11 +38,28 @@ const MAX_SHOT_DISTANCE: f32 = 90.0;
 #[derive(Component)]
 pub struct Shootable {
     health: f32,
+    max_health: f32,
 }
 
 impl Shootable {
     pub const fn new(health: f32) -> Self {
-        Self { health }
+        Self {
+            health,
+            max_health: health,
+        }
+    }
+
+    pub fn damage(&mut self, amount: f32) -> bool {
+        self.health = (self.health - amount).max(0.0);
+        self.health <= 0.0
+    }
+
+    pub fn health_fraction(&self) -> f32 {
+        if self.max_health <= f32::EPSILON {
+            0.0
+        } else {
+            (self.health / self.max_health).clamp(0.0, 1.0)
+        }
     }
 }
 
@@ -168,6 +188,7 @@ impl WeaponKind {
 struct ViewModelState {
     spawned: bool,
     fire_kick: f32,
+    bob_phase: f32,
 }
 
 #[derive(Component)]
@@ -459,10 +480,13 @@ fn fire_weapon(
     mut inventory: ResMut<WeaponInventory>,
     mut view_model: ResMut<ViewModelState>,
     mut shot_report: ResMut<ShotReport>,
+    sounds: Res<SoundEffects>,
+    mut score: ResMut<Score>,
     camera: Query<&Transform, With<PlayerCamera>>,
     colliders: Res<MapColliders>,
     targets: Query<(Entity, &Hitbox, &Transform), With<Shootable>>,
     mut health: Query<&mut Shootable>,
+    score_values: Query<&ScoreValue>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -494,6 +518,13 @@ fn fire_weapon(
     weapon.ammo -= 1;
     weapon.cooldown_remaining = stats.cooldown_secs;
     view_model.fire_kick = 1.0;
+
+    let sound = match inventory.active {
+        WeaponKind::Rifle => sounds.rifle_shot.clone(),
+        WeaponKind::Pistol => sounds.pistol_shot.clone(),
+    };
+    let variation = 0.96 + (shot_report.serial % 4) as f32 * 0.035;
+    play_sound(&mut commands, sound, 0.38, variation);
 
     let origin = camera_transform.translation;
     let direction = camera_transform.rotation * Vec3::NEG_Z;
@@ -545,8 +576,11 @@ fn fire_weapon(
             return;
         };
 
-        shootable.health -= stats.damage;
-        if shootable.health <= 0.0 {
+        if shootable.damage(stats.damage) {
+            if let Ok(score_value) = score_values.get(entity) {
+                score.kills += 1;
+                score.points += score_value.points;
+            }
             commands.entity(entity).despawn();
         }
     }
@@ -554,11 +588,25 @@ fn fire_weapon(
 
 fn animate_view_model(
     time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
     inventory: Res<WeaponInventory>,
     mut state: ResMut<ViewModelState>,
     mut models: Query<(&WeaponModel, &mut Transform)>,
 ) {
     state.fire_kick = (state.fire_kick - time.delta_secs() * 9.5).max(0.0);
+    let moving = keys.pressed(KeyCode::KeyW)
+        || keys.pressed(KeyCode::KeyA)
+        || keys.pressed(KeyCode::KeyS)
+        || keys.pressed(KeyCode::KeyD);
+    let sprinting = moving && keys.pressed(KeyCode::ShiftLeft);
+    let bob_speed = if sprinting { 13.5 } else { 8.4 };
+    let bob_amount = if sprinting { 0.055 } else { 0.028 };
+
+    if moving {
+        state.bob_phase += time.delta_secs() * bob_speed;
+    } else {
+        state.bob_phase *= (1.0 - time.delta_secs() * 8.0).max(0.0);
+    }
 
     let active = inventory.active;
     let stats = active.stats();
@@ -580,12 +628,19 @@ fn animate_view_model(
         0.0
     };
     let recoil = state.fire_kick * state.fire_kick;
+    let bob_x = state.bob_phase.sin() * bob_amount * 0.55;
+    let bob_y = (state.bob_phase * 2.0).sin().abs() * bob_amount;
+    let sprint_tilt = if sprinting { 0.20 } else { 0.0 };
 
     for (model, mut transform) in &mut models {
         let mut offset = Vec3::ZERO;
         let mut rotation = model.base_rotation;
 
         if model.kind == active {
+            offset += Vec3::new(bob_x, -bob_y, if sprinting { 0.04 } else { 0.0 });
+            rotation *= Quat::from_rotation_z(-bob_x * 1.35 + sprint_tilt)
+                * Quat::from_rotation_x(-bob_y * 0.9);
+
             offset += Vec3::new(-0.08 * reload_wave, -0.16 * reload_wave, 0.04 * reload_wave);
             rotation *= Quat::from_rotation_z(0.24 * reload_wave)
                 * Quat::from_rotation_x(-0.18 * reload_wave);

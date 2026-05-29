@@ -1,7 +1,9 @@
 use bevy::prelude::*;
 
+use crate::audio_fx::{SoundEffects, play_sound};
 use crate::collision::move_circle_through_aabbs;
 use crate::combat::{Hitbox, Shootable, ShotReport};
+use crate::game_ui::{GameMode, ScoreValue};
 use crate::map::MapColliders;
 use crate::player::PlayerCamera;
 
@@ -11,7 +13,14 @@ impl Plugin for ZombiePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_zombies).add_systems(
             Update,
-            (wake_zombies, move_zombies, animate_zombies).chain(),
+            (
+                wake_zombies,
+                move_zombies,
+                animate_zombies,
+                update_zombie_health_bars,
+            )
+                .chain()
+                .run_if(in_state(GameMode::Playing)),
         );
     }
 }
@@ -34,6 +43,7 @@ struct ZombieBrain {
     wander_remaining: f32,
     last_shot_serial: u64,
     step_phase: f32,
+    groan_cooldown: f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -47,6 +57,11 @@ struct ZombiePart {
     base_translation: Vec3,
 }
 
+#[derive(Component)]
+struct ZombieHealthFill {
+    width: f32,
+}
+
 fn spawn_zombies(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -56,6 +71,8 @@ fn spawn_zombies(
     let body = materials.add(zombie_material(Color::srgb(0.25, 0.45, 0.22)));
     let shirt = materials.add(zombie_material(Color::srgb(0.20, 0.26, 0.34)));
     let dark = materials.add(zombie_material(Color::srgb(0.08, 0.09, 0.08)));
+    let health_back = materials.add(zombie_material(Color::srgb(0.28, 0.04, 0.03)));
+    let health_fill = materials.add(zombie_material(Color::srgb(0.18, 0.86, 0.22)));
 
     for (index, position) in zombie_spawn_points().into_iter().enumerate() {
         let direction = initial_direction(index);
@@ -70,9 +87,11 @@ fn spawn_zombies(
                     wander_remaining: 1.4 + index as f32 * 0.27,
                     last_shot_serial: 0,
                     step_phase: index as f32,
+                    groan_cooldown: 0.9 + index as f32 * 0.31,
                 },
                 Shootable::new(120.0),
                 Hitbox::from_center_size(position, Vec3::new(0.85, 1.85, 0.75)),
+                ScoreValue::new(100),
             ))
             .with_children(|parent| {
                 spawn_part(
@@ -117,6 +136,25 @@ fn spawn_zombies(
                     Vec3::new(0.16, -0.86, 0.0),
                     Vec3::new(0.18, 0.62, 0.16),
                 );
+                parent.spawn((
+                    Mesh3d(cube.clone()),
+                    MeshMaterial3d(health_back.clone()),
+                    Transform {
+                        translation: Vec3::new(0.0, 1.18, -0.46),
+                        scale: Vec3::new(0.82, 0.08, 0.045),
+                        ..default()
+                    },
+                ));
+                parent.spawn((
+                    Mesh3d(cube.clone()),
+                    MeshMaterial3d(health_fill.clone()),
+                    Transform {
+                        translation: Vec3::new(0.0, 1.185, -0.51),
+                        scale: Vec3::new(0.76, 0.055, 0.045),
+                        ..default()
+                    },
+                    ZombieHealthFill { width: 0.76 },
+                ));
             });
     }
 }
@@ -175,7 +213,9 @@ fn wake_zombies(
 }
 
 fn move_zombies(
+    mut commands: Commands,
     time: Res<Time>,
+    sounds: Res<SoundEffects>,
     player: Query<&Transform, (With<PlayerCamera>, Without<Zombie>)>,
     colliders: Res<MapColliders>,
     mut zombies: Query<(&mut Transform, &mut ZombieBrain), (With<Zombie>, Without<PlayerCamera>)>,
@@ -221,7 +261,7 @@ fn move_zombies(
         }
 
         transform.translation.x = resolved.x;
-        transform.translation.y = ZOMBIE_CENTER_Y;
+        transform.translation.y = ZOMBIE_CENTER_Y + colliders.floor_height_at(resolved);
         transform.translation.z = resolved.y;
 
         let facing = if resolved.distance_squared(current) > 0.0001 {
@@ -237,6 +277,15 @@ fn move_zombies(
         transform.look_at(look_target, Vec3::Y);
 
         brain.step_phase += delta_secs * speed * 4.0;
+
+        if brain.state == ZombieState::Chase {
+            brain.groan_cooldown -= delta_secs;
+            if brain.groan_cooldown <= 0.0 {
+                let pitch = 0.78 + (brain.step_phase.sin() + 1.0) * 0.08;
+                play_sound(&mut commands, sounds.zombie_groan.clone(), 0.20, pitch);
+                brain.groan_cooldown = 2.0 + (brain.step_phase.cos() + 1.0) * 0.7;
+            }
+        }
     }
 }
 
@@ -262,16 +311,34 @@ fn animate_zombies(
     }
 }
 
+fn update_zombie_health_bars(
+    zombies: Query<(&Shootable, &Children), With<Zombie>>,
+    mut bars: Query<(&ZombieHealthFill, &mut Transform)>,
+) {
+    for (shootable, children) in &zombies {
+        let fraction = shootable.health_fraction();
+        for child in children.iter() {
+            let Ok((bar, mut transform)) = bars.get_mut(child) else {
+                continue;
+            };
+
+            let width = (bar.width * fraction).max(0.02);
+            transform.scale.x = width;
+            transform.translation.x = -(bar.width - width) * 0.5;
+        }
+    }
+}
+
 fn zombie_spawn_points() -> [Vec3; 8] {
     [
-        Vec3::new(-35.5, ZOMBIE_CENTER_Y, 5.0),
-        Vec3::new(-23.0, ZOMBIE_CENTER_Y, -27.5),
-        Vec3::new(-9.5, ZOMBIE_CENTER_Y, -10.8),
-        Vec3::new(2.0, ZOMBIE_CENTER_Y, 4.0),
-        Vec3::new(29.0, ZOMBIE_CENTER_Y, 14.0),
-        Vec3::new(31.0, ZOMBIE_CENTER_Y, -24.5),
-        Vec3::new(11.0, ZOMBIE_CENTER_Y, -18.5),
-        Vec3::new(-5.0, ZOMBIE_CENTER_Y, 25.0),
+        Vec3::new(-38.0, ZOMBIE_CENTER_Y, 30.0),
+        Vec3::new(38.0, ZOMBIE_CENTER_Y, 29.0),
+        Vec3::new(-18.0, ZOMBIE_CENTER_Y, 5.0),
+        Vec3::new(19.0, ZOMBIE_CENTER_Y, -3.5),
+        Vec3::new(-2.0, ZOMBIE_CENTER_Y, -11.0),
+        Vec3::new(-37.0, ZOMBIE_CENTER_Y, -24.0),
+        Vec3::new(37.0, ZOMBIE_CENTER_Y, -25.5),
+        Vec3::new(1.5, ZOMBIE_CENTER_Y, -34.0),
     ]
 }
 

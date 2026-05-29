@@ -1,5 +1,7 @@
+mod audio_fx;
 mod collision;
 mod combat;
+mod game_ui;
 mod map;
 mod player;
 mod zombies;
@@ -17,19 +19,21 @@ fn main() {
         })
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Bevy FPS Dust Blockout".into(),
+                title: "Bevy Market Sweep".into(),
                 resolution: WindowResolution::new(1280, 720),
                 present_mode: PresentMode::AutoVsync,
                 ..default()
             }),
             primary_cursor_options: Some(CursorOptions {
-                grab_mode: CursorGrabMode::Locked,
-                visible: false,
+                grab_mode: CursorGrabMode::None,
+                visible: true,
                 ..default()
             }),
             ..default()
         }))
         .add_plugins((
+            game_ui::GameUiPlugin,
+            audio_fx::AudioFxPlugin,
             map::MapPlugin,
             player::PlayerPlugin,
             combat::CombatPlugin,

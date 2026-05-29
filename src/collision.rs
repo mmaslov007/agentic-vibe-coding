@@ -29,6 +29,11 @@ impl Aabb2 {
         delta.x < self.half_extents.x + other.half_extents.x
             && delta.y < self.half_extents.y + other.half_extents.y
     }
+
+    pub fn contains_point(self, point: Vec2) -> bool {
+        let delta = (point - self.center).abs();
+        delta.x <= self.half_extents.x && delta.y <= self.half_extents.y
+    }
 }
 
 impl Aabb3 {
