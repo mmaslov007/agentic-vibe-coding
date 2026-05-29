@@ -94,7 +94,7 @@ fn spawn_zombies(
                     wander_remaining: 1.4 + index as f32 * 0.27,
                     last_shot_serial: 0,
                     step_phase: index as f32,
-                    groan_cooldown: 0.9 + index as f32 * 0.31,
+                    groan_cooldown: 2.4 + index as f32 * 0.43,
                 },
                 Shootable::new(120.0),
                 Hitbox::from_center_size(position, Vec3::new(0.85, 1.85, 0.75)),
@@ -188,8 +188,10 @@ fn spawn_part(
 }
 
 fn wake_zombies(
+    mut commands: Commands,
     player: Query<&Transform, With<PlayerCamera>>,
     shot_report: Res<ShotReport>,
+    sounds: Res<SoundEffects>,
     mut zombies: Query<(Entity, &Transform, &mut ZombieBrain), With<Zombie>>,
 ) {
     let Ok(player_transform) = player.single() else {
@@ -200,7 +202,7 @@ fn wake_zombies(
     for (entity, transform, mut brain) in &mut zombies {
         let zombie_position = xz(transform.translation);
         if zombie_position.distance(player_position) <= PROXIMITY_AGGRO_RADIUS {
-            brain.state = ZombieState::Chase;
+            alert_zombie(&mut commands, &sounds, &mut brain);
         }
 
         if shot_report.serial != 0 && shot_report.serial != brain.last_shot_serial {
@@ -213,7 +215,7 @@ fn wake_zombies(
             let direct_hit = shot_report.hit_entity == Some(entity);
 
             if heard_shot || heard_impact || direct_hit {
-                brain.state = ZombieState::Chase;
+                alert_zombie(&mut commands, &sounds, &mut brain);
             }
         }
     }
@@ -285,15 +287,32 @@ fn move_zombies(
 
         brain.step_phase += delta_secs * speed * 4.0;
 
-        if brain.state == ZombieState::Chase {
-            brain.groan_cooldown -= delta_secs;
-            if brain.groan_cooldown <= 0.0 {
-                let pitch = 0.78 + (brain.step_phase.sin() + 1.0) * 0.08;
-                play_sound(&mut commands, sounds.zombie_groan.clone(), 0.20, pitch);
-                brain.groan_cooldown = 2.0 + (brain.step_phase.cos() + 1.0) * 0.7;
+        brain.groan_cooldown -= delta_secs;
+        if brain.groan_cooldown <= 0.0 {
+            match brain.state {
+                ZombieState::Chase => {
+                    let pitch = 0.78 + (brain.step_phase.sin() + 1.0) * 0.08;
+                    play_sound(&mut commands, sounds.zombie_groan.clone(), 0.22, pitch);
+                    brain.groan_cooldown = 1.8 + (brain.step_phase.cos() + 1.0) * 0.65;
+                }
+                ZombieState::Wander => {
+                    let pitch = 0.68 + (brain.step_phase.cos() + 1.0) * 0.06;
+                    play_sound(&mut commands, sounds.zombie_idle.clone(), 0.13, pitch);
+                    brain.groan_cooldown = 4.2 + (brain.step_phase.sin() + 1.0) * 1.1;
+                }
             }
         }
     }
+}
+
+fn alert_zombie(commands: &mut Commands, sounds: &SoundEffects, brain: &mut ZombieBrain) {
+    if brain.state == ZombieState::Wander {
+        let pitch = 0.88 + (brain.step_phase.sin() + 1.0) * 0.12;
+        play_sound(commands, sounds.zombie_alert.clone(), 0.28, pitch);
+        brain.groan_cooldown = 0.6;
+    }
+
+    brain.state = ZombieState::Chase;
 }
 
 fn animate_zombies(

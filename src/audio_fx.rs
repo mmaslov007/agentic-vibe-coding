@@ -14,7 +14,10 @@ pub struct SoundEffects {
     pub rifle_shot: Handle<Pitch>,
     pub pistol_shot: Handle<Pitch>,
     pub footstep: Handle<Pitch>,
+    pub zombie_idle: Handle<Pitch>,
+    pub zombie_alert: Handle<Pitch>,
     pub zombie_groan: Handle<Pitch>,
+    pub zombie_hit: Handle<Pitch>,
 }
 
 pub fn play_sound(commands: &mut Commands, sound: Handle<Pitch>, volume: f32, speed: f32) {
@@ -31,6 +34,9 @@ fn setup_audio_fx(mut commands: Commands, mut pitch_assets: ResMut<Assets<Pitch>
         rifle_shot: pitch_assets.add(Pitch::new(118.0, Duration::from_millis(75))),
         pistol_shot: pitch_assets.add(Pitch::new(170.0, Duration::from_millis(95))),
         footstep: pitch_assets.add(Pitch::new(64.0, Duration::from_millis(115))),
-        zombie_groan: pitch_assets.add(Pitch::new(46.0, Duration::from_millis(620))),
+        zombie_idle: pitch_assets.add(Pitch::new(39.0, Duration::from_millis(520))),
+        zombie_alert: pitch_assets.add(Pitch::new(82.0, Duration::from_millis(360))),
+        zombie_groan: pitch_assets.add(Pitch::new(46.0, Duration::from_millis(700))),
+        zombie_hit: pitch_assets.add(Pitch::new(96.0, Duration::from_millis(180))),
     });
 }

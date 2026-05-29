@@ -1,55 +1,92 @@
-# Bevy FPS Dust Blockout
+# Market Sweep
 
-Small Rust + Bevy first-person shooter scaffold. The first playable goal is an empty, Dust2-inspired desert blockout with WASD walking, mouse look, sprinting, and simple wall collision.
+Market Sweep is a Rust + Bevy first-person shooter prototype. Pick a map, move through a compact arena, swap between an M16-inspired rifle and a USP-inspired pistol, and clear slow wandering zombies before they close in.
 
-This project does not use Counter-Strike assets. The map is an original graybox inspired by the high-level idea of long lanes, mid doors, tunnels, and two sites.
+The project uses procedural blockout geometry, procedural textures, and generated pitch-based sound effects. It does not use Counter-Strike assets or other commercial game assets.
 
-## Run
+## Features
 
-Install Rust first if `cargo` is not available:
+- First-person mouse look and WASD movement
+- Rifle and pistol with ammo, reloads, tracers, and recoil
+- Zombie AI with wandering, hearing, proximity aggro, chase behavior, hit reactions, health bars, and score rewards
+- Menu flow with map selection and an Escape pause menu
+- Three selectable maps:
+  - `Desert Market`
+  - `Greenwood`
+  - `Night Quarter`
+- Procedural audio for shooting, walking, zombie idle sounds, alerts, hit reactions, and chase groans
+
+## Requirements
+
+- Windows, macOS, or Linux
+- Rust toolchain with Cargo
+
+On Windows, install Rust with:
 
 ```powershell
 winget install Rustlang.Rustup
 ```
 
-Then restart your terminal and run:
+Restart your terminal after installation so `cargo` is available on your `PATH`.
+
+## Run The Game
+
+From the project folder:
 
 ```powershell
 cargo run
 ```
 
-The first build can take a while because Bevy is being compiled.
+The first run can take several minutes because Bevy and its dependencies need to compile. Later runs should be much faster.
+
+If `cargo` is not recognized in PowerShell but Rust is installed, try:
+
+```powershell
+& "$env:USERPROFILE\.cargo\bin\cargo.exe" run
+```
+
+## Controls
+
+- `WASD`: Move
+- `Mouse`: Look
+- `Left Shift`: Sprint
+- `Left Click`: Shoot or recapture the cursor
+- `1`: Equip rifle
+- `2`: Equip pistol
+- `R`: Reload
+- `Escape`: Pause menu
+
+Pause menu options:
+
+- `Return`: Resume the current match
+- `Main Menu`: Return to map selection
+- `Close Game`: Quit
 
 ## Verify
+
+Run tests:
 
 ```powershell
 cargo test
 ```
 
-## Controls
+Check compilation without launching:
 
-- `WASD`: move
-- `Mouse`: look
-- `Left Shift`: sprint
-- `Left click`: shoot
-- `1`: rifle
-- `2`: pistol
-- `R`: reload
-- `Esc`: release cursor
-- `Left click`: capture cursor again
+```powershell
+cargo check
+```
 
-Zombies wander until they hear shots, are hit, or you get close enough. Once alerted, they chase you.
-
-## Project Shape
+## Project Structure
 
 - `src/main.rs`: Bevy app setup and plugin registration
-- `src/player.rs`: first-person camera controller and movement
-- `src/map.rs`: map blockout and static collider registration
-- `src/collision.rs`: reusable 2D horizontal AABB collision helpers
+- `src/game_ui.rs`: Main menu, map selection, HUD, pause menu, score state
+- `src/player.rs`: First-person camera, movement, sprinting, footsteps
+- `src/combat.rs`: Weapons, reloads, hitscan shots, tracers, scoring hooks
+- `src/zombies.rs`: Zombie spawning, movement AI, health bars, zombie audio
+- `src/map.rs`: Procedural map selection, geometry, textures, lighting, colliders
+- `src/audio_fx.rs`: Procedural sound handles and playback helper
+- `src/collision.rs`: AABB collision and ray intersection helpers
 
-## Next Steps
+## Notes
 
-- Replace blockout geometry with a real scene asset pipeline.
-- Add jump/gravity and sloped ramps.
-- Swap manual collision for a physics plugin if you need dynamic bodies.
-- Add weapons, interactions, spawns, and game states.
+This is still a scaffold, so maps are intentionally built from simple Bevy primitives. Good next upgrades would be a proper asset pipeline, spatial audio, player health/damage, and authored models for the environment and enemies.

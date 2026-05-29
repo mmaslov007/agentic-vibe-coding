@@ -578,6 +578,11 @@ fn fire_weapon(
             return;
         };
 
+        if score_values.get(entity).is_ok() {
+            let pitch = 0.88 + (shot_report.serial % 5) as f32 * 0.045;
+            play_sound(&mut commands, sounds.zombie_hit.clone(), 0.24, pitch);
+        }
+
         if shootable.damage(stats.damage) {
             if let Ok(score_value) = score_values.get(entity) {
                 score.kills += 1;
