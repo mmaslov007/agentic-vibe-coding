@@ -1,6 +1,6 @@
 # Blox-Z
 
-Blox-Z is a Rust + Bevy first-person zombie shooter prototype built from simple blocky geometry. Pick an arena, load in with an M16-inspired rifle and USP-inspired pistol, and clear wandering zombies before they hear you and swarm.
+Blox-Z is a Rust + Bevy first-person zombie shooter prototype built from simple blocky geometry. Pick an arena, load in with a rifle and pistol, and clear wandering zombies before they hear you and swarm.
 
 Everything in the prototype is made from procedural Bevy primitives, procedural textures, and generated pitch-based sound effects. No commercial game assets are used.
 
