@@ -2,6 +2,7 @@ mod collision;
 mod combat;
 mod map;
 mod player;
+mod zombies;
 
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, WindowResolution};
@@ -28,6 +29,11 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins((map::MapPlugin, player::PlayerPlugin, combat::CombatPlugin))
+        .add_plugins((
+            map::MapPlugin,
+            player::PlayerPlugin,
+            combat::CombatPlugin,
+            zombies::ZombiePlugin,
+        ))
         .run();
 }

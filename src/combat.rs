@@ -11,6 +11,7 @@ impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WeaponInventory>()
             .init_resource::<ViewModelState>()
+            .init_resource::<ShotReport>()
             .add_systems(
                 Update,
                 (
@@ -44,15 +45,27 @@ impl Shootable {
 
 #[derive(Component)]
 pub struct Hitbox {
-    bounds: Aabb3,
+    half_extents: Vec3,
 }
 
 impl Hitbox {
-    pub fn from_center_size(center: Vec3, size: Vec3) -> Self {
+    pub fn from_center_size(_center: Vec3, size: Vec3) -> Self {
         Self {
-            bounds: Aabb3::from_center_size(center, size),
+            half_extents: size * 0.5,
         }
     }
+
+    fn world_bounds(&self, center: Vec3) -> Aabb3 {
+        Aabb3::new(center, self.half_extents)
+    }
+}
+
+#[derive(Resource, Default, Clone, Copy)]
+pub struct ShotReport {
+    pub serial: u64,
+    pub origin: Vec3,
+    pub hit_position: Vec3,
+    pub hit_entity: Option<Entity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +186,13 @@ enum WeaponPart {
     Magazine,
     Grip,
     Stock,
+    Handguard,
+    CarryHandle,
+    FrontSight,
+    Slide,
+    Frame,
+    TriggerGuard,
+    Suppressor,
 }
 
 #[derive(Component)]
@@ -196,21 +216,24 @@ fn ensure_view_model(
     };
 
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
-    let rifle_body = materials.add(weapon_material(Color::srgb(0.27, 0.30, 0.28)));
-    let rifle_trim = materials.add(weapon_material(Color::srgb(0.62, 0.50, 0.30)));
+    let rifle_body = materials.add(weapon_material(Color::srgb(0.18, 0.21, 0.19)));
+    let rifle_trim = materials.add(weapon_material(Color::srgb(0.10, 0.11, 0.10)));
     let rifle_dark = materials.add(weapon_material(Color::srgb(0.08, 0.09, 0.09)));
-    let pistol_body = materials.add(weapon_material(Color::srgb(0.12, 0.13, 0.14)));
+    let pistol_body = materials.add(weapon_material(Color::srgb(0.09, 0.10, 0.11)));
+    let pistol_slide = materials.add(weapon_material(Color::srgb(0.16, 0.17, 0.18)));
     let crosshair = materials.add(weapon_material(Color::srgb(0.92, 0.98, 0.92)));
 
     commands.entity(camera_entity).with_children(|parent| {
+        // M16-inspired silhouette: long receiver, triangular handguard,
+        // carry handle, straight magazine, fixed stock, and long barrel.
         spawn_piece(
             parent,
             &cube,
             &rifle_body,
             WeaponKind::Rifle,
             WeaponPart::Body,
-            Vec3::new(0.25, -0.23, -0.50),
-            Vec3::new(0.22, 0.15, 0.62),
+            Vec3::new(0.24, -0.23, -0.48),
+            Vec3::new(0.24, 0.15, 0.52),
         );
         spawn_piece(
             parent,
@@ -218,8 +241,44 @@ fn ensure_view_model(
             &rifle_dark,
             WeaponKind::Rifle,
             WeaponPart::Barrel,
-            Vec3::new(0.25, -0.18, -0.88),
-            Vec3::new(0.06, 0.06, 0.56),
+            Vec3::new(0.24, -0.18, -1.14),
+            Vec3::new(0.045, 0.045, 0.74),
+        );
+        spawn_piece(
+            parent,
+            &cube,
+            &rifle_trim,
+            WeaponKind::Rifle,
+            WeaponPart::Handguard,
+            Vec3::new(0.24, -0.23, -0.83),
+            Vec3::new(0.20, 0.16, 0.42),
+        );
+        spawn_piece(
+            parent,
+            &cube,
+            &rifle_dark,
+            WeaponKind::Rifle,
+            WeaponPart::CarryHandle,
+            Vec3::new(0.24, -0.10, -0.45),
+            Vec3::new(0.16, 0.06, 0.35),
+        );
+        spawn_piece(
+            parent,
+            &cube,
+            &rifle_dark,
+            WeaponKind::Rifle,
+            WeaponPart::CarryHandle,
+            Vec3::new(0.24, -0.05, -0.45),
+            Vec3::new(0.06, 0.08, 0.24),
+        );
+        spawn_piece(
+            parent,
+            &cube,
+            &rifle_dark,
+            WeaponKind::Rifle,
+            WeaponPart::FrontSight,
+            Vec3::new(0.24, -0.08, -1.28),
+            Vec3::new(0.07, 0.14, 0.05),
         );
         spawn_piece(
             parent,
@@ -227,8 +286,8 @@ fn ensure_view_model(
             &rifle_trim,
             WeaponKind::Rifle,
             WeaponPart::Grip,
-            Vec3::new(0.39, -0.35, -0.40),
-            Vec3::new(0.12, 0.24, 0.14),
+            Vec3::new(0.36, -0.38, -0.37),
+            Vec3::new(0.11, 0.25, 0.13),
         );
         spawn_piece(
             parent,
@@ -236,8 +295,8 @@ fn ensure_view_model(
             &rifle_trim,
             WeaponKind::Rifle,
             WeaponPart::Magazine,
-            Vec3::new(0.21, -0.39, -0.46),
-            Vec3::new(0.13, 0.24, 0.16),
+            Vec3::new(0.19, -0.42, -0.50),
+            Vec3::new(0.12, 0.31, 0.15),
         );
         spawn_piece(
             parent,
@@ -245,18 +304,29 @@ fn ensure_view_model(
             &rifle_dark,
             WeaponKind::Rifle,
             WeaponPart::Stock,
-            Vec3::new(0.38, -0.24, -0.20),
-            Vec3::new(0.18, 0.12, 0.20),
+            Vec3::new(0.36, -0.23, -0.11),
+            Vec3::new(0.22, 0.14, 0.32),
         );
 
+        // USP-inspired pistol: boxy slide, compact frame, angled grip,
+        // squared trigger guard, and a slim tactical suppressor profile.
+        spawn_piece(
+            parent,
+            &cube,
+            &pistol_slide,
+            WeaponKind::Pistol,
+            WeaponPart::Slide,
+            Vec3::new(0.30, -0.30, -0.62),
+            Vec3::new(0.16, 0.10, 0.42),
+        );
         spawn_piece(
             parent,
             &cube,
             &pistol_body,
             WeaponKind::Pistol,
-            WeaponPart::Body,
-            Vec3::new(0.30, -0.33, -0.62),
-            Vec3::new(0.14, 0.11, 0.34),
+            WeaponPart::Frame,
+            Vec3::new(0.30, -0.38, -0.56),
+            Vec3::new(0.14, 0.08, 0.26),
         );
         spawn_piece(
             parent,
@@ -264,8 +334,35 @@ fn ensure_view_model(
             &pistol_body,
             WeaponKind::Pistol,
             WeaponPart::Grip,
-            Vec3::new(0.36, -0.46, -0.52),
-            Vec3::new(0.09, 0.25, 0.12),
+            Vec3::new(0.36, -0.51, -0.48),
+            Vec3::new(0.10, 0.28, 0.13),
+        );
+        spawn_piece(
+            parent,
+            &cube,
+            &pistol_body,
+            WeaponKind::Pistol,
+            WeaponPart::Magazine,
+            Vec3::new(0.36, -0.58, -0.48),
+            Vec3::new(0.08, 0.16, 0.11),
+        );
+        spawn_piece(
+            parent,
+            &cube,
+            &pistol_body,
+            WeaponKind::Pistol,
+            WeaponPart::TriggerGuard,
+            Vec3::new(0.29, -0.44, -0.66),
+            Vec3::new(0.12, 0.08, 0.08),
+        );
+        spawn_piece(
+            parent,
+            &cube,
+            &pistol_slide,
+            WeaponKind::Pistol,
+            WeaponPart::Suppressor,
+            Vec3::new(0.30, -0.30, -0.94),
+            Vec3::new(0.10, 0.10, 0.38),
         );
 
         parent.spawn((
@@ -361,9 +458,10 @@ fn fire_weapon(
     buttons: Res<ButtonInput<MouseButton>>,
     mut inventory: ResMut<WeaponInventory>,
     mut view_model: ResMut<ViewModelState>,
+    mut shot_report: ResMut<ShotReport>,
     camera: Query<&Transform, With<PlayerCamera>>,
     colliders: Res<MapColliders>,
-    targets: Query<(Entity, &Hitbox), With<Shootable>>,
+    targets: Query<(Entity, &Hitbox, &Transform), With<Shootable>>,
     mut health: Query<&mut Shootable>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -410,9 +508,9 @@ fn fire_weapon(
 
     let target_hit = targets
         .iter()
-        .filter_map(|(entity, hitbox)| {
+        .filter_map(|(entity, hitbox, transform)| {
             hitbox
-                .bounds
+                .world_bounds(transform.translation)
                 .ray_intersection_distance(origin, direction, MAX_SHOT_DISTANCE)
                 .map(|distance| (entity, distance))
         })
@@ -429,6 +527,11 @@ fn fire_weapon(
     }
 
     let hit_position = origin + direction * hit_distance;
+    shot_report.serial = shot_report.serial.wrapping_add(1);
+    shot_report.origin = origin;
+    shot_report.hit_position = hit_position;
+    shot_report.hit_entity = hit_target;
+
     spawn_shot_effects(
         &mut commands,
         &mut meshes,
@@ -498,7 +601,16 @@ fn animate_view_model(
                 WeaponPart::Barrel => {
                     offset += Vec3::new(0.0, 0.0, 0.06 * recoil);
                 }
-                WeaponPart::Grip | WeaponPart::Stock | WeaponPart::Body => {}
+                WeaponPart::Grip
+                | WeaponPart::Stock
+                | WeaponPart::Body
+                | WeaponPart::Handguard
+                | WeaponPart::CarryHandle
+                | WeaponPart::FrontSight
+                | WeaponPart::Slide
+                | WeaponPart::Frame
+                | WeaponPart::TriggerGuard
+                | WeaponPart::Suppressor => {}
             }
         }
 

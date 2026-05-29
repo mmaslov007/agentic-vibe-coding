@@ -38,6 +38,8 @@ cargo test
 - `Esc`: release cursor
 - `Left click`: capture cursor again
 
+Zombies wander until they hear shots, are hit, or you get close enough. Once alerted, they chase you.
+
 ## Project Shape
 
 - `src/main.rs`: Bevy app setup and plugin registration
