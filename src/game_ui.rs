@@ -7,6 +7,7 @@ impl Plugin for GameUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<GameMode>()
             .init_resource::<Score>()
+            .init_resource::<AmmoHud>()
             .init_resource::<SelectedMap>()
             .init_resource::<PauseState>()
             .add_systems(Startup, setup_ui_camera)
@@ -23,6 +24,7 @@ impl Plugin for GameUiPlugin {
                 Update,
                 (
                     update_hud_score,
+                    update_hud_ammo,
                     toggle_pause_menu,
                     handle_pause_menu_actions,
                     update_button_colors,
@@ -43,6 +45,25 @@ pub enum GameMode {
 pub struct Score {
     pub kills: u32,
     pub points: u32,
+}
+
+#[derive(Resource)]
+pub struct AmmoHud {
+    pub weapon: &'static str,
+    pub ammo: u16,
+    pub magazine_size: u16,
+    pub reloading: bool,
+}
+
+impl Default for AmmoHud {
+    fn default() -> Self {
+        Self {
+            weapon: "Rifle",
+            ammo: 30,
+            magazine_size: 30,
+            reloading: false,
+        }
+    }
 }
 
 #[derive(Resource, Default)]
@@ -121,6 +142,9 @@ struct ScoreText;
 struct KillText;
 
 #[derive(Component)]
+struct AmmoText;
+
+#[derive(Component)]
 struct PauseRoot;
 
 const PANEL: Color = Color::srgba(0.025, 0.022, 0.017, 0.74);
@@ -159,7 +183,7 @@ fn spawn_menu(mut commands: Commands) {
         ))
         .with_children(|root| {
             root.spawn((
-                Text::new("Market Sweep"),
+                Text::new("Blox-Z"),
                 TextFont {
                     font_size: 56.0,
                     ..default()
@@ -167,7 +191,7 @@ fn spawn_menu(mut commands: Commands) {
                 TextColor(TEXT),
             ));
             root.spawn((
-                Text::new("Choose a map, then clear the infected."),
+                Text::new("Choose a map, then clear the infected blocks."),
                 TextFont {
                     font_size: 20.0,
                     ..default()
@@ -259,6 +283,34 @@ fn spawn_hud(mut commands: Commands) {
                 },
                 TextColor(Color::srgb(0.80, 0.74, 0.62)),
                 KillText,
+            ));
+        });
+
+    commands
+        .spawn((
+            DespawnOnExit(GameMode::Playing),
+            Node {
+                position_type: PositionType::Absolute,
+                right: px(16),
+                bottom: px(16),
+                min_width: px(190),
+                padding: UiRect::axes(px(14), px(10)),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::FlexEnd,
+                row_gap: px(4),
+                ..default()
+            },
+            BackgroundColor(PANEL),
+        ))
+        .with_children(|hud| {
+            hud.spawn((
+                Text::new("Rifle 30 / 30"),
+                TextFont {
+                    font_size: 24.0,
+                    ..default()
+                },
+                TextColor(TEXT),
+                AmmoText,
             ));
         });
 }
@@ -444,6 +496,20 @@ fn update_hud_score(
     }
     for mut text in &mut kill_texts {
         text.0 = format!("Kills {}", score.kills);
+    }
+}
+
+fn update_hud_ammo(ammo: Res<AmmoHud>, mut texts: Query<&mut Text, With<AmmoText>>) {
+    if !ammo.is_changed() {
+        return;
+    }
+
+    let status = if ammo.reloading { " Reloading" } else { "" };
+    for mut text in &mut texts {
+        text.0 = format!(
+            "{} {} / {}{}",
+            ammo.weapon, ammo.ammo, ammo.magazine_size, status
+        );
     }
 }
 

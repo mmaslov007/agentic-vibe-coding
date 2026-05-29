@@ -19,7 +19,7 @@ fn main() {
         })
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Bevy Market Sweep".into(),
+                title: "Blox-Z".into(),
                 resolution: WindowResolution::new(1280, 720),
                 present_mode: PresentMode::AutoVsync,
                 ..default()

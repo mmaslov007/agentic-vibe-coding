@@ -1,9 +1,8 @@
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
 
 use crate::audio_fx::{SoundEffects, play_sound};
 use crate::collision::Aabb3;
-use crate::game_ui::{GameMode, Score, ScoreValue, gameplay_unpaused};
+use crate::game_ui::{AmmoHud, GameMode, Score, ScoreValue, gameplay_unpaused};
 use crate::map::MapColliders;
 use crate::player::PlayerCamera;
 
@@ -14,7 +13,10 @@ impl Plugin for CombatPlugin {
         app.init_resource::<WeaponInventory>()
             .init_resource::<ViewModelState>()
             .init_resource::<ShotReport>()
-            .add_systems(OnEnter(GameMode::Playing), reset_shot_report)
+            .add_systems(
+                OnEnter(GameMode::Playing),
+                (reset_weapons, reset_shot_report),
+            )
             .add_systems(
                 Update,
                 (
@@ -25,7 +27,7 @@ impl Plugin for CombatPlugin {
                     fire_weapon,
                     animate_view_model,
                     update_weapon_model_visibility,
-                    update_window_title,
+                    update_ammo_hud,
                     expire_effects,
                 )
                     .chain()
@@ -753,26 +755,17 @@ fn update_weapon_model_visibility(
     }
 }
 
-fn update_window_title(
-    inventory: Res<WeaponInventory>,
-    mut windows: Query<&mut Window, With<PrimaryWindow>>,
-) {
-    let Ok(mut window) = windows.single_mut() else {
-        return;
-    };
-
+fn update_ammo_hud(inventory: Res<WeaponInventory>, mut ammo_hud: ResMut<AmmoHud>) {
     let stats = inventory.active.stats();
     let weapon = inventory.active_state();
-    let status = if weapon.reload_remaining > 0.0 {
-        "Reloading"
-    } else {
-        "Ready"
-    };
+    ammo_hud.weapon = stats.label;
+    ammo_hud.ammo = weapon.ammo;
+    ammo_hud.magazine_size = stats.magazine_size;
+    ammo_hud.reloading = weapon.reload_remaining > 0.0;
+}
 
-    window.title = format!(
-        "Bevy FPS Dust Blockout - {} {}/{} - {}",
-        stats.label, weapon.ammo, stats.magazine_size, status
-    );
+fn reset_weapons(mut inventory: ResMut<WeaponInventory>) {
+    *inventory = WeaponInventory::default();
 }
 
 fn reset_shot_report(mut shot_report: ResMut<ShotReport>) {
