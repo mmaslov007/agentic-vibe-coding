@@ -1,4 +1,10 @@
-use bevy::prelude::*;
+use bevy::{
+    asset::RenderAssetUsages,
+    image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
+    math::Affine2,
+    prelude::*,
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+};
 
 use crate::collision::{Aabb2, Aabb3};
 use crate::combat::{Hitbox, Shootable};
@@ -8,7 +14,8 @@ pub struct MapPlugin;
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(MapColliders::default())
-            .add_systems(Startup, spawn_map);
+            .add_systems(Startup, spawn_map)
+            .add_systems(Update, drift_clouds);
     }
 }
 
@@ -106,9 +113,10 @@ fn spawn_map(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     mut colliders: ResMut<MapColliders>,
 ) {
-    let palette = MapPalette::new(&mut materials);
+    let palette = MapPalette::new(&mut materials, &mut images);
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
 
     for block in dust_blockout() {
@@ -129,6 +137,7 @@ fn spawn_map(
     }
 
     spawn_targets(&mut commands, &mut meshes, &mut materials);
+    spawn_clouds(&mut commands, &mut meshes, &mut materials);
     spawn_lighting(&mut commands);
 }
 
@@ -166,6 +175,67 @@ fn spawn_lighting(commands: &mut Commands) {
     ));
 }
 
+#[derive(Component)]
+struct Cloud {
+    speed: f32,
+    wrap_x: f32,
+}
+
+fn spawn_clouds(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
+    let mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+    let material = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.96, 0.96, 0.92, 0.58),
+        alpha_mode: AlphaMode::Blend,
+        perceptual_roughness: 1.0,
+        unlit: true,
+        ..default()
+    });
+
+    let clusters = [
+        (Vec3::new(-34.0, 18.0, -18.0), 0.55),
+        (Vec3::new(3.0, 21.0, -29.0), 0.35),
+        (Vec3::new(28.0, 19.5, 12.0), 0.48),
+        (Vec3::new(-8.0, 20.0, 25.0), 0.42),
+    ];
+    let puffs = [
+        (Vec3::new(0.0, 0.0, 0.0), Vec3::new(8.5, 0.7, 3.2)),
+        (Vec3::new(-3.4, 0.2, 0.8), Vec3::new(5.4, 0.9, 2.6)),
+        (Vec3::new(3.6, 0.1, -0.5), Vec3::new(6.2, 0.8, 2.8)),
+        (Vec3::new(0.9, 0.35, 1.4), Vec3::new(4.4, 0.8, 2.4)),
+    ];
+
+    for (center, speed) in clusters {
+        for (offset, size) in puffs {
+            commands.spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(material.clone()),
+                Transform {
+                    translation: center + offset,
+                    scale: size,
+                    ..default()
+                },
+                Cloud {
+                    speed,
+                    wrap_x: 58.0,
+                },
+            ));
+        }
+    }
+}
+
+fn drift_clouds(time: Res<Time>, mut clouds: Query<(&mut Transform, &Cloud)>) {
+    for (mut transform, cloud) in &mut clouds {
+        transform.translation.x += cloud.speed * time.delta_secs();
+        if transform.translation.x > cloud.wrap_x {
+            transform.translation.x = -cloud.wrap_x;
+        }
+    }
+}
+
 struct MapPalette {
     floor: Handle<StandardMaterial>,
     wall: Handle<StandardMaterial>,
@@ -175,13 +245,44 @@ struct MapPalette {
 }
 
 impl MapPalette {
-    fn new(materials: &mut Assets<StandardMaterial>) -> Self {
+    fn new(materials: &mut Assets<StandardMaterial>, images: &mut Assets<Image>) -> Self {
+        let sand = images.add(procedural_texture(
+            [181, 160, 118],
+            [210, 190, 146],
+            [136, 117, 83],
+            7,
+        ));
+        let plaster = images.add(procedural_texture(
+            [198, 178, 132],
+            [225, 207, 163],
+            [151, 130, 91],
+            19,
+        ));
+        let crate_wood = images.add(procedural_texture(
+            [116, 91, 63],
+            [151, 121, 83],
+            [72, 52, 35],
+            31,
+        ));
+        let site_sand = images.add(procedural_texture(
+            [161, 133, 79],
+            [194, 166, 105],
+            [111, 89, 51],
+            43,
+        ));
+        let door_wood = images.add(procedural_texture(
+            [82, 55, 31],
+            [122, 84, 47],
+            [41, 27, 17],
+            53,
+        ));
+
         Self {
-            floor: materials.add(material(Color::srgb(0.72, 0.64, 0.48))),
-            wall: materials.add(material(Color::srgb(0.78, 0.69, 0.52))),
-            prop: materials.add(material(Color::srgb(0.49, 0.41, 0.31))),
-            site: materials.add(material(Color::srgb(0.63, 0.53, 0.36))),
-            door: materials.add(material(Color::srgb(0.34, 0.24, 0.15))),
+            floor: materials.add(textured_material(sand, Vec2::new(12.0, 12.0))),
+            wall: materials.add(textured_material(plaster, Vec2::new(4.0, 3.0))),
+            prop: materials.add(textured_material(crate_wood, Vec2::new(2.0, 2.0))),
+            site: materials.add(textured_material(site_sand, Vec2::new(5.0, 5.0))),
+            door: materials.add(textured_material(door_wood, Vec2::new(2.0, 2.0))),
         }
     }
 
@@ -203,6 +304,81 @@ fn material(base_color: Color) -> StandardMaterial {
         metallic: 0.0,
         ..default()
     }
+}
+
+fn textured_material(texture: Handle<Image>, uv_scale: Vec2) -> StandardMaterial {
+    StandardMaterial {
+        base_color: Color::WHITE,
+        base_color_texture: Some(texture),
+        uv_transform: Affine2::from_scale(uv_scale),
+        perceptual_roughness: 0.95,
+        metallic: 0.0,
+        ..default()
+    }
+}
+
+fn procedural_texture(base: [u8; 3], light: [u8; 3], dark: [u8; 3], seed: u32) -> Image {
+    const SIZE: usize = 32;
+    let mut data = Vec::with_capacity(SIZE * SIZE * 4);
+
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let seam = y % 8 == 0 || ((y / 8) % 2 == 0 && x % 16 == 0);
+            let hash = noise_hash(x as u32, y as u32, seed);
+            let color = if seam {
+                blend(base, dark, 0.62)
+            } else if hash > 210 {
+                blend(base, light, 0.42)
+            } else if hash < 55 {
+                blend(base, dark, 0.30)
+            } else {
+                base
+            };
+
+            data.extend_from_slice(&[color[0], color[1], color[2], 255]);
+        }
+    }
+
+    let mut image = Image::new_fill(
+        Extent3d {
+            width: SIZE as u32,
+            height: SIZE as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        mag_filter: ImageFilterMode::Nearest,
+        min_filter: ImageFilterMode::Nearest,
+        ..ImageSamplerDescriptor::linear()
+    });
+    image
+}
+
+fn noise_hash(x: u32, y: u32, seed: u32) -> u8 {
+    let mut value = x
+        .wrapping_mul(374_761_393)
+        .wrapping_add(y.wrapping_mul(668_265_263))
+        .wrapping_add(seed.wrapping_mul(2_246_822_519));
+    value = (value ^ (value >> 13)).wrapping_mul(1_274_126_177);
+    ((value ^ (value >> 16)) & 0xff) as u8
+}
+
+fn blend(a: [u8; 3], b: [u8; 3], amount: f32) -> [u8; 3] {
+    [
+        lerp_u8(a[0], b[0], amount),
+        lerp_u8(a[1], b[1], amount),
+        lerp_u8(a[2], b[2], amount),
+    ]
+}
+
+fn lerp_u8(a: u8, b: u8, amount: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * amount).round() as u8
 }
 
 fn dust_blockout() -> Vec<Block> {

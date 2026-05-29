@@ -19,6 +19,7 @@ impl Plugin for CombatPlugin {
                     reload_weapon,
                     tick_weapon_timers,
                     fire_weapon,
+                    animate_view_model,
                     update_weapon_model_visibility,
                     update_window_title,
                     expire_effects,
@@ -153,11 +154,25 @@ impl WeaponKind {
 #[derive(Resource, Default)]
 struct ViewModelState {
     spawned: bool,
+    fire_kick: f32,
 }
 
 #[derive(Component)]
 struct WeaponModel {
     kind: WeaponKind,
+    part: WeaponPart,
+    base_translation: Vec3,
+    base_rotation: Quat,
+    base_scale: Vec3,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WeaponPart {
+    Body,
+    Barrel,
+    Magazine,
+    Grip,
+    Stock,
 }
 
 #[derive(Component)]
@@ -181,10 +196,11 @@ fn ensure_view_model(
     };
 
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
-    let rifle_body = materials.add(material(Color::srgb(0.16, 0.18, 0.17)));
-    let rifle_trim = materials.add(material(Color::srgb(0.45, 0.38, 0.24)));
-    let pistol_body = materials.add(material(Color::srgb(0.07, 0.08, 0.09)));
-    let crosshair = materials.add(material(Color::srgb(0.92, 0.98, 0.92)));
+    let rifle_body = materials.add(weapon_material(Color::srgb(0.27, 0.30, 0.28)));
+    let rifle_trim = materials.add(weapon_material(Color::srgb(0.62, 0.50, 0.30)));
+    let rifle_dark = materials.add(weapon_material(Color::srgb(0.08, 0.09, 0.09)));
+    let pistol_body = materials.add(weapon_material(Color::srgb(0.12, 0.13, 0.14)));
+    let crosshair = materials.add(weapon_material(Color::srgb(0.92, 0.98, 0.92)));
 
     commands.entity(camera_entity).with_children(|parent| {
         spawn_piece(
@@ -192,24 +208,45 @@ fn ensure_view_model(
             &cube,
             &rifle_body,
             WeaponKind::Rifle,
-            Vec3::new(0.32, -0.30, -0.72),
-            Vec3::new(0.16, 0.12, 0.54),
+            WeaponPart::Body,
+            Vec3::new(0.25, -0.23, -0.50),
+            Vec3::new(0.22, 0.15, 0.62),
+        );
+        spawn_piece(
+            parent,
+            &cube,
+            &rifle_dark,
+            WeaponKind::Rifle,
+            WeaponPart::Barrel,
+            Vec3::new(0.25, -0.18, -0.88),
+            Vec3::new(0.06, 0.06, 0.56),
         );
         spawn_piece(
             parent,
             &cube,
             &rifle_trim,
             WeaponKind::Rifle,
-            Vec3::new(0.32, -0.24, -1.08),
-            Vec3::new(0.05, 0.05, 0.48),
+            WeaponPart::Grip,
+            Vec3::new(0.39, -0.35, -0.40),
+            Vec3::new(0.12, 0.24, 0.14),
         );
         spawn_piece(
             parent,
             &cube,
             &rifle_trim,
             WeaponKind::Rifle,
-            Vec3::new(0.44, -0.36, -0.50),
-            Vec3::new(0.11, 0.20, 0.13),
+            WeaponPart::Magazine,
+            Vec3::new(0.21, -0.39, -0.46),
+            Vec3::new(0.13, 0.24, 0.16),
+        );
+        spawn_piece(
+            parent,
+            &cube,
+            &rifle_dark,
+            WeaponKind::Rifle,
+            WeaponPart::Stock,
+            Vec3::new(0.38, -0.24, -0.20),
+            Vec3::new(0.18, 0.12, 0.20),
         );
 
         spawn_piece(
@@ -217,6 +254,7 @@ fn ensure_view_model(
             &cube,
             &pistol_body,
             WeaponKind::Pistol,
+            WeaponPart::Body,
             Vec3::new(0.30, -0.33, -0.62),
             Vec3::new(0.14, 0.11, 0.34),
         );
@@ -225,6 +263,7 @@ fn ensure_view_model(
             &cube,
             &pistol_body,
             WeaponKind::Pistol,
+            WeaponPart::Grip,
             Vec3::new(0.36, -0.46, -0.52),
             Vec3::new(0.09, 0.25, 0.12),
         );
@@ -257,6 +296,7 @@ fn spawn_piece(
     mesh: &Handle<Mesh>,
     material: &Handle<StandardMaterial>,
     kind: WeaponKind,
+    part: WeaponPart,
     translation: Vec3,
     scale: Vec3,
 ) {
@@ -268,7 +308,13 @@ fn spawn_piece(
             scale,
             ..default()
         },
-        WeaponModel { kind },
+        WeaponModel {
+            kind,
+            part,
+            base_translation: translation,
+            base_rotation: Quat::IDENTITY,
+            base_scale: scale,
+        },
     ));
 }
 
@@ -314,6 +360,7 @@ fn fire_weapon(
     mut commands: Commands,
     buttons: Res<ButtonInput<MouseButton>>,
     mut inventory: ResMut<WeaponInventory>,
+    mut view_model: ResMut<ViewModelState>,
     camera: Query<&Transform, With<PlayerCamera>>,
     colliders: Res<MapColliders>,
     targets: Query<(Entity, &Hitbox), With<Shootable>>,
@@ -333,6 +380,11 @@ fn fire_weapon(
     }
 
     let weapon = inventory.active_state_mut();
+    if weapon.ammo == 0 && weapon.reload_remaining <= 0.0 {
+        weapon.reload_remaining = stats.reload_secs;
+        return;
+    }
+
     if !weapon.ready() {
         return;
     }
@@ -343,6 +395,7 @@ fn fire_weapon(
 
     weapon.ammo -= 1;
     weapon.cooldown_remaining = stats.cooldown_secs;
+    view_model.fire_kick = 1.0;
 
     let origin = camera_transform.translation;
     let direction = camera_transform.rotation * Vec3::NEG_Z;
@@ -393,6 +446,65 @@ fn fire_weapon(
         if shootable.health <= 0.0 {
             commands.entity(entity).despawn();
         }
+    }
+}
+
+fn animate_view_model(
+    time: Res<Time>,
+    inventory: Res<WeaponInventory>,
+    mut state: ResMut<ViewModelState>,
+    mut models: Query<(&WeaponModel, &mut Transform)>,
+) {
+    state.fire_kick = (state.fire_kick - time.delta_secs() * 9.5).max(0.0);
+
+    let active = inventory.active;
+    let stats = active.stats();
+    let weapon = inventory.active_state();
+    let reload_progress = if weapon.reload_remaining > 0.0 {
+        1.0 - weapon.reload_remaining / stats.reload_secs
+    } else {
+        0.0
+    };
+    let reload_wave = (reload_progress * std::f32::consts::PI).sin();
+    let mag_drop = if weapon.reload_remaining > 0.0 {
+        if reload_progress < 0.45 {
+            reload_progress / 0.45
+        } else {
+            (1.0 - reload_progress) / 0.55
+        }
+        .clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let recoil = state.fire_kick * state.fire_kick;
+
+    for (model, mut transform) in &mut models {
+        let mut offset = Vec3::ZERO;
+        let mut rotation = model.base_rotation;
+
+        if model.kind == active {
+            offset += Vec3::new(-0.08 * reload_wave, -0.16 * reload_wave, 0.04 * reload_wave);
+            rotation *= Quat::from_rotation_z(0.24 * reload_wave)
+                * Quat::from_rotation_x(-0.18 * reload_wave);
+
+            offset += Vec3::new(0.0, -0.025 * recoil, 0.09 * recoil);
+            rotation *= Quat::from_rotation_x(0.10 * recoil);
+
+            match model.part {
+                WeaponPart::Magazine => {
+                    offset += Vec3::new(-0.02 * mag_drop, -0.34 * mag_drop, 0.08 * mag_drop);
+                    rotation *= Quat::from_rotation_x(0.55 * mag_drop);
+                }
+                WeaponPart::Barrel => {
+                    offset += Vec3::new(0.0, 0.0, 0.06 * recoil);
+                }
+                WeaponPart::Grip | WeaponPart::Stock | WeaponPart::Body => {}
+            }
+        }
+
+        transform.translation = model.base_translation + offset;
+        transform.rotation = rotation;
+        transform.scale = model.base_scale;
     }
 }
 
@@ -507,6 +619,17 @@ fn material(base_color: Color) -> StandardMaterial {
         base_color,
         perceptual_roughness: 0.8,
         metallic: 0.0,
+        unlit: true,
+        ..default()
+    }
+}
+
+fn weapon_material(base_color: Color) -> StandardMaterial {
+    StandardMaterial {
+        base_color,
+        perceptual_roughness: 0.72,
+        metallic: 0.05,
+        unlit: true,
         ..default()
     }
 }
