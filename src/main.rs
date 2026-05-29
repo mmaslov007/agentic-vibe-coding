@@ -1,4 +1,5 @@
 mod collision;
+mod combat;
 mod map;
 mod player;
 
@@ -27,6 +28,6 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins((map::MapPlugin, player::PlayerPlugin))
+        .add_plugins((map::MapPlugin, player::PlayerPlugin, combat::CombatPlugin))
         .run();
 }

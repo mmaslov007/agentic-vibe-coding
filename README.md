@@ -31,6 +31,10 @@ cargo test
 - `WASD`: move
 - `Mouse`: look
 - `Left Shift`: sprint
+- `Left click`: shoot
+- `1`: rifle
+- `2`: pistol
+- `R`: reload
 - `Esc`: release cursor
 - `Left click`: capture cursor again
 

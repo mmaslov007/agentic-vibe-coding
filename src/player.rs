@@ -23,6 +23,9 @@ const SPRINT_SPEED: f32 = 8.0;
 const MOUSE_SENSITIVITY: f32 = 0.0024;
 
 #[derive(Component)]
+pub struct PlayerCamera;
+
+#[derive(Component)]
 struct PlayerController {
     yaw: f32,
     pitch: f32,
@@ -31,10 +34,11 @@ struct PlayerController {
 fn spawn_player(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(-24.0, PLAYER_EYE_HEIGHT, 21.0)
-            .looking_at(Vec3::new(-14.0, PLAYER_EYE_HEIGHT, 13.0), Vec3::Y),
+        Transform::from_xyz(0.0, PLAYER_EYE_HEIGHT, 30.0)
+            .looking_at(Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0), Vec3::Y),
+        PlayerCamera,
         PlayerController {
-            yaw: -0.9,
+            yaw: 0.0,
             pitch: 0.0,
         },
     ));
